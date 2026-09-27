@@ -5,7 +5,7 @@
 // decrypt them.
 
 datasource db {
-  provider = "sqlite" // swap to "postgresql" for production
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 

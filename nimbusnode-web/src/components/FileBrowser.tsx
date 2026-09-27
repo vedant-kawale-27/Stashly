@@ -31,10 +31,21 @@ function isPreviewable(mimeType: string | null): boolean {
   );
 }
 
+function pathSegments(path: string): string[] {
+  return path.split("/").filter(Boolean);
+}
+
+function isInsidePath(filePath: string, folderPath: string): boolean {
+  const fileSegments = pathSegments(filePath);
+  const folderSegments = pathSegments(folderPath);
+  return folderSegments.every((segment, index) => fileSegments[index] === segment);
+}
+
 export function FileBrowser({ client, deviceId, masterKey }: Props) {
   const [files, setFiles] = useState<FileMeta[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busyFileId, setBusyFileId] = useState<string | null>(null);
+  const [currentPath, setCurrentPath] = useState("");
 
   async function refresh() {
     try {
@@ -46,6 +57,7 @@ export function FileBrowser({ client, deviceId, masterKey }: Props) {
   }
 
   useEffect(() => {
+    setCurrentPath("");
     refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deviceId]);
@@ -103,10 +115,54 @@ export function FileBrowser({ client, deviceId, masterKey }: Props) {
     }
   }
 
+  async function openFile(file: FileMeta) {
+    if (isPreviewable(file.mimeType)) {
+      await handlePreview(file);
+    } else {
+      await handleDownload(file);
+    }
+  }
+
+  const currentSegments = pathSegments(currentPath);
+  const folderMap = new Map<string, string>();
+  const visibleFiles: FileMeta[] = [];
+
+  for (const file of files) {
+    if (!isInsidePath(file.path, currentPath)) continue;
+    const segments = pathSegments(file.path);
+    if (segments.length <= currentSegments.length) continue;
+
+    const remainingSegments = segments.slice(currentSegments.length);
+    if (remainingSegments.length === 1) {
+      visibleFiles.push(file);
+    } else {
+      const folderName = remainingSegments[0];
+      const folderPath = [...currentSegments, folderName].join("/");
+      folderMap.set(folderPath, folderName);
+    }
+  }
+
+  const visibleFolders = [...folderMap.entries()].sort((a, b) => a[1].localeCompare(b[1]));
+  visibleFiles.sort((a, b) => a.name.localeCompare(b.name));
+
   return (
     <div className="card">
       <h2>Files</h2>
       {error && <p className="error">{error}</p>}
+      {files.length > 0 && (
+        <div className="breadcrumbs" aria-label="Folder path">
+          <button className="link-button" onClick={() => setCurrentPath("")}>Home</button>
+          {currentSegments.map((segment, index) => {
+            const path = currentSegments.slice(0, index + 1).join("/");
+            return (
+              <span key={path}>
+                <span className="breadcrumb-separator">/</span>
+                <button className="link-button" onClick={() => setCurrentPath(path)}>{segment}</button>
+              </span>
+            );
+          })}
+        </div>
+      )}
       {files.length === 0 && !error && <p className="muted">No files synced yet.</p>}
       <table>
         <thead>
@@ -118,9 +174,22 @@ export function FileBrowser({ client, deviceId, masterKey }: Props) {
           </tr>
         </thead>
         <tbody>
-          {files.map((f) => (
+          {visibleFolders.map(([path, name]) => (
+            <tr key={path}>
+              <td colSpan={4}>
+                <button className="file-entry folder-entry" onClick={() => setCurrentPath(path)}>
+                  <span aria-hidden="true">[DIR]</span> {name}
+                </button>
+              </td>
+            </tr>
+          ))}
+          {visibleFiles.map((f) => (
             <tr key={f.id}>
-              <td>{f.path}</td>
+              <td>
+                <button className="file-entry" onClick={() => openFile(f)} disabled={busyFileId === f.id}>
+                  <span aria-hidden="true">[FILE]</span> {f.name}
+                </button>
+              </td>
               <td>{formatBytes(f.sizeBytes)}</td>
               <td>
                 <span className={`badge ${f.deviceOnline ? "online" : "offline"}`}>
@@ -147,6 +216,9 @@ export function FileBrowser({ client, deviceId, masterKey }: Props) {
               </td>
             </tr>
           ))}
+          {files.length > 0 && visibleFolders.length === 0 && visibleFiles.length === 0 && (
+            <tr><td colSpan={4} className="muted">This folder is empty.</td></tr>
+          )}
         </tbody>
       </table>
     </div>

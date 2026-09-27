@@ -17,10 +17,18 @@ export function LoginForm({ brokerUrl, onBrokerUrlChange, onAuthenticated }: Pro
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    const normalizedBrokerUrl = brokerUrl.trim().replace(/\/+$/, "");
+    const normalizedEmail = email.trim();
+    if (!normalizedBrokerUrl || !normalizedEmail || !password) {
+      setError("Broker URL, email, and password are required");
+      return;
+    }
     setBusy(true);
     try {
-      const client = new BrokerClient(brokerUrl);
-      const token = mode === "login" ? await client.login(email, password) : await client.register(email, password);
+      const client = new BrokerClient(normalizedBrokerUrl);
+      const token = mode === "login"
+        ? await client.login(normalizedEmail, password)
+        : await client.register(normalizedEmail, password);
       onAuthenticated(token);
     } catch (err: any) {
       setError(err.message ?? "Something went wrong");

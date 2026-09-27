@@ -32,12 +32,14 @@ class MainActivity : AppCompatActivity() {
         refreshStatus()
 
         binding.pairButton.setOnClickListener { onPairClicked() }
+        binding.stopNodeButton.setOnClickListener { onStopNodeClicked() }
+        binding.startNodeButton.setOnClickListener { onStartNodeClicked() }
         binding.batteryOptButton.setOnClickListener { requestIgnoreBatteryOptimizations() }
         binding.fullStorageAccessButton.setOnClickListener { requestFullStorageAccess() }
         binding.showMasterKeyButton.setOnClickListener { onShowMasterKeyClicked() }
         binding.syncNowButton.setOnClickListener { onSyncNowClicked() }
 
-        if (storage.isPaired) {
+        if (storage.isPaired && storage.nodeEnabled) {
             startForegroundService(Intent(this, StorageNodeService::class.java))
         }
     }
@@ -66,6 +68,7 @@ class MainActivity : AppCompatActivity() {
                 storage.brokerBaseUrl = brokerUrl
                 storage.deviceId = result.deviceId
                 storage.deviceToken = result.deviceToken
+                storage.nodeEnabled = true
 
                 // If a previous instance of the service is already running
                 // (e.g. re-pairing after a broker DB reset), it read the old
@@ -81,6 +84,24 @@ class MainActivity : AppCompatActivity() {
                 binding.pairButton.isEnabled = true
             }
         }
+    }
+
+    private fun onStartNodeClicked() {
+        if (!storage.isPaired) {
+            Toast.makeText(this, "Not paired yet — enter a pairing code first", Toast.LENGTH_SHORT).show()
+            return
+        }
+        storage.nodeEnabled = true
+        startForegroundService(Intent(this, StorageNodeService::class.java))
+        Toast.makeText(this, "Storage node starting…", Toast.LENGTH_SHORT).show()
+        refreshStatus()
+    }
+
+    private fun onStopNodeClicked() {
+        storage.nodeEnabled = false
+        stopService(Intent(this, StorageNodeService::class.java))
+        Toast.makeText(this, "Storage node stopped", Toast.LENGTH_SHORT).show()
+        refreshStatus()
     }
 
     private fun requestIgnoreBatteryOptimizations() {
@@ -152,7 +173,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         binding.statusText.text = if (storage.isPaired) {
-            "Paired with device id ${storage.deviceId}\nBroker: ${storage.brokerBaseUrl}\n$accessLine"
+            val runState = if (storage.nodeEnabled) "running" else "stopped"
+            "Paired with device id ${storage.deviceId}\nBroker: ${storage.brokerBaseUrl}\nNode: $runState\n$accessLine"
         } else {
             "Not paired\n$accessLine"
         }

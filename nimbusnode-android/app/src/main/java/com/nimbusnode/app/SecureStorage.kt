@@ -53,6 +53,13 @@ class SecureStorage(context: Context) {
     val isPaired: Boolean
         get() = deviceId != null && deviceToken != null && brokerBaseUrl != null
 
+    // Tracks whether the user wants the storage node running — distinct
+    // from isPaired, so tapping "Stop" persists across app restarts and
+    // reboots instead of BootReceiver/onCreate silently starting it back up.
+    var nodeEnabled: Boolean
+        get() = prefs.getBoolean(KEY_NODE_ENABLED, true) // defaults on once paired
+        set(value) = prefs.edit().putBoolean(KEY_NODE_ENABLED, value).apply()
+
     fun clear() = prefs.edit().clear().apply()
 
     companion object {
@@ -60,5 +67,6 @@ class SecureStorage(context: Context) {
         private const val KEY_DEVICE_ID = "device_id"
         private const val KEY_DEVICE_TOKEN = "device_token"
         private const val KEY_MASTER_KEY = "master_key"
+        private const val KEY_NODE_ENABLED = "node_enabled"
     }
 }

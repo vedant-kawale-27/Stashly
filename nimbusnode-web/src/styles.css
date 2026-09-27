@@ -52,6 +52,31 @@ button.secondary { background: #e5e7eb; color: #1a1a1a; }
 .error { color: #b91c1c; font-size: 0.9rem; }
 .muted { color: #666; font-size: 0.85rem; }
 
+.breadcrumbs {
+  margin: -4px 0 12px;
+  color: #666;
+  font-size: 0.9rem;
+}
+
+.link-button,
+.file-entry {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: #5b21b6;
+  font: inherit;
+  text-align: left;
+}
+
+.link-button { cursor: pointer; }
+.link-button:hover, .file-entry:hover { text-decoration: underline; }
+.breadcrumb-separator { margin: 0 6px; color: #999; }
+.file-entry { color: #1a1a1a; cursor: pointer; font-weight: 600; }
+.file-entry span { color: #666; font-family: monospace; font-size: 0.75rem; }
+.file-entry:disabled { cursor: wait; opacity: 0.6; }
+.folder-entry { color: #5b21b6; }
+
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 6px 4px; border-bottom: 1px solid #eee; font-size: 0.9rem; }
 

@@ -5,7 +5,8 @@ import { prisma } from "../db";
 export const authRouter = Router();
 
 authRouter.post("/register", async (req, res) => {
-  const { email, password } = req.body ?? {};
+  const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
+  const password = typeof req.body?.password === "string" ? req.body.password : "";
   if (!email || !password) {
     return res.status(400).json({ error: "email and password are required" });
   }
@@ -23,7 +24,11 @@ authRouter.post("/register", async (req, res) => {
 });
 
 authRouter.post("/login", async (req, res) => {
-  const { email, password } = req.body ?? {};
+  const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
+  const password = typeof req.body?.password === "string" ? req.body.password : "";
+  if (!email || !password) {
+    return res.status(400).json({ error: "email and password are required" });
+  }
   const user = await prisma.user.findUnique({ where: { email } });
   if (!user || !(await verifyPassword(password, user.passwordHash))) {
     return res.status(401).json({ error: "Invalid email or password" });

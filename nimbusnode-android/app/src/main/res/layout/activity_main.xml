@@ -42,6 +42,20 @@
         android:text="Pair &amp; start storage node" />
 
     <Button
+        android:id="@+id/stopNodeButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="Stop node" />
+
+    <Button
+        android:id="@+id/startNodeButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="Start node" />
+
+    <Button
         android:id="@+id/batteryOptButton"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"

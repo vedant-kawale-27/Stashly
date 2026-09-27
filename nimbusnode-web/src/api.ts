@@ -28,9 +28,18 @@ export interface DownloadedFile {
 
 class ApiError extends Error {}
 
-async function parseJsonOrThrow(res: Response) {
+async function parseJsonOrThrow<T = Record<string, unknown>>(res: Response): Promise<T> {
   const text = await res.text();
-  const json = text ? JSON.parse(text) : {};
+  let json: { error?: string } & T = {} as { error?: string } & T;
+  if (text) {
+    try {
+      json = JSON.parse(text);
+    } catch {
+      if (!res.ok) {
+        throw new ApiError(`Request failed (HTTP ${res.status})`);
+      }
+    }
+  }
   if (!res.ok) {
     throw new ApiError(json.error ?? `Request failed (HTTP ${res.status})`);
   }
@@ -38,7 +47,11 @@ async function parseJsonOrThrow(res: Response) {
 }
 
 export class BrokerClient {
-  constructor(private baseUrl: string, private token?: string) {}
+  private readonly baseUrl: string;
+
+  constructor(baseUrl: string, private token?: string) {
+    this.baseUrl = baseUrl.trim().replace(/\/+$/, "");
+  }
 
   withToken(token: string): BrokerClient {
     return new BrokerClient(this.baseUrl, token);
@@ -54,7 +67,7 @@ export class BrokerClient {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password }),
     });
-    const json = await parseJsonOrThrow(res);
+    const json = await parseJsonOrThrow<{ token: string }>(res);
     return json.token;
   }
 
@@ -64,7 +77,7 @@ export class BrokerClient {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password }),
     });
-    const json = await parseJsonOrThrow(res);
+    const json = await parseJsonOrThrow<{ token: string }>(res);
     return json.token;
   }
 

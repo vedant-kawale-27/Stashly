@@ -9,7 +9,7 @@ class BootReceiver : BroadcastReceiver() {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
 
         val storage = SecureStorage(context)
-        if (storage.isPaired) {
+        if (storage.isPaired && storage.nodeEnabled) {
             context.startForegroundService(Intent(context, StorageNodeService::class.java))
         }
     }
