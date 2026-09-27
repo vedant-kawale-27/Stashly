@@ -1,0 +1,50 @@
+# Node / web app
+node_modules/
+.npm/
+.env
+.env.*
+!.env.example
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Vite build output
+/dist/
+.vite/
+
+# Broker / Prisma
+prisma/*.db
+prisma/*.db-journal
+
+# Android / Gradle
+.gradle/
+**/build/
+**/captures/
+**/local.properties
+**/.idea/
+**/.externalNativeBuild/
+**/.cxx/
+**/*.iml
+**/androidTest/**/build/
+**/test/**/build/
+
+# Kotlin/Java generated files
+**/generated/
+**/tmp/
+**/out/
+
+# OS / editor files
+.DS_Store
+Thumbs.db
+*.log
+
+# JetBrains
+.idea/
+*.iws
+*.ipr
+
+# VS Code
+.vscode/
+
+# Optional: keep lockfiles tracked
+!package-lock.json

@@ -1,0 +1,72 @@
+// NimbusNode broker — data model
+// Note: the broker NEVER stores plaintext file content or unwrapped encryption
+// keys. `encryptedDek` and any cached blobs are opaque ciphertext produced by
+// the client/device; only the paired devices hold the master key needed to
+// decrypt them.
+
+datasource db {
+  provider = "sqlite" // swap to "postgresql" for production
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+
+  devices        Device[]
+  pairingTokens  PairingToken[]
+}
+
+model Device {
+  id            String   @id @default(uuid())
+  userId        String
+  name          String // e.g. "Vedant's Pixel 8"
+  status        String   @default("offline") // "online" | "offline"
+  lastSeenAt    DateTime?
+  storageQuotaMb Int      @default(0) // how much local storage this device has offered
+  createdAt     DateTime @default(now())
+
+  user  User        @relation(fields: [userId], references: [id])
+  files FileEntry[]
+
+  @@index([userId])
+}
+
+model FileEntry {
+  id            String    @id @default(uuid())
+  deviceId      String
+  path          String // virtual path, e.g. "/Documents/report.pdf"
+  name          String
+  sizeBytes     Int
+  contentHash   String // hash of the CIPHERTEXT, for integrity checks only
+  mimeType      String?
+  encryptedDek  String // wrapped per-file data key, opaque to the broker
+  isCached      Boolean   @default(false)
+  cacheKey      String? // pointer into blob storage (S3/MinIO) if cached
+  cachedAt      DateTime?
+  lastAccessAt  DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  device Device @relation(fields: [deviceId], references: [id])
+
+  @@unique([deviceId, path])
+  @@index([deviceId])
+}
+
+model PairingToken {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  used      Boolean  @default(false)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+}

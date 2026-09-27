@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="24dp">
+
+    <TextView
+        android:id="@+id/statusText"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="16dp"
+        android:text="Not paired"
+        android:textSize="16sp" />
+
+    <EditText
+        android:id="@+id/brokerUrlInput"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="Broker URL (e.g. https://broker.example.com)"
+        android:inputType="textUri" />
+
+    <EditText
+        android:id="@+id/deviceNameInput"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="This device's name"
+        android:inputType="text" />
+
+    <EditText
+        android:id="@+id/pairingTokenInput"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="Pairing code from the web dashboard"
+        android:inputType="textCapCharacters" />
+
+    <Button
+        android:id="@+id/pairButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:text="Pair &amp; start storage node" />
+
+    <Button
+        android:id="@+id/batteryOptButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="Disable battery optimization" />
+
+    <Button
+        android:id="@+id/fullStorageAccessButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="Grant full file access" />
+
+    <Button
+        android:id="@+id/showMasterKeyButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="Show master key" />
+
+    <Button
+        android:id="@+id/syncNowButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="Sync now" />
+
+    <TextView
+        android:id="@+id/masterKeyText"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:textIsSelectable="true"
+        android:fontFamily="monospace"
+        android:textSize="13sp"
+        android:visibility="gone" />
+
+</LinearLayout>

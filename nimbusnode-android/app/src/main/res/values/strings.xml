@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">NimbusNode</string>
+    <string name="notification_channel_name">Storage node</string>
+    <string name="notification_title">NimbusNode is active</string>
+    <string name="notification_text_connecting">Connecting to broker…</string>
+    <string name="notification_text_online">Online — files reachable from anywhere</string>
+    <string name="notification_text_offline">No network — will reconnect automatically</string>
+</resources>
