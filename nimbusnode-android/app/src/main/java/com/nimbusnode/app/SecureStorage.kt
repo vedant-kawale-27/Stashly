@@ -7,10 +7,8 @@ import androidx.security.crypto.MasterKey
 
 /**
  * Wraps EncryptedSharedPreferences (backed by the Android Keystore) for the
- * handful of secrets/config this app needs to keep locally: which broker to
- * talk to, this device's id/token, and pairing status. None of this is ever
- * sent anywhere except the initial pairing call and the device's own
- * authenticated WebSocket connection.
+ * secrets/config this app needs to keep locally: which broker to talk to,
+ * device id/token, user email, pairing status, and live connection timestamp.
  */
 class SecureStorage(context: Context) {
 
@@ -42,10 +40,10 @@ class SecureStorage(context: Context) {
         get() = prefs.getString(KEY_DEVICE_TOKEN, null)
         set(value) = prefs.edit().putString(KEY_DEVICE_TOKEN, value).apply()
 
-    // Raw AES-256 account master key, base64-encoded. At rest this is
-    // protected by the Keystore-backed encryption EncryptedSharedPreferences
-    // already provides; in memory it's held only as long as needed to
-    // wrap/unwrap a DEK. See KeyManager for the known multi-device caveat.
+    var userEmail: String?
+        get() = prefs.getString(KEY_USER_EMAIL, null)
+        set(value) = prefs.edit().putString(KEY_USER_EMAIL, value).apply()
+
     var masterKeyBase64: String?
         get() = prefs.getString(KEY_MASTER_KEY, null)
         set(value) = prefs.edit().putString(KEY_MASTER_KEY, value).apply()
@@ -53,12 +51,37 @@ class SecureStorage(context: Context) {
     val isPaired: Boolean
         get() = deviceId != null && deviceToken != null && brokerBaseUrl != null
 
-    // Tracks whether the user wants the storage node running — distinct
-    // from isPaired, so tapping "Stop" persists across app restarts and
-    // reboots instead of BootReceiver/onCreate silently starting it back up.
     var nodeEnabled: Boolean
-        get() = prefs.getBoolean(KEY_NODE_ENABLED, true) // defaults on once paired
+        get() = prefs.getBoolean(KEY_NODE_ENABLED, true)
         set(value) = prefs.edit().putBoolean(KEY_NODE_ENABLED, value).apply()
+
+    var isLive: Boolean
+        get() = prefs.getBoolean(KEY_IS_LIVE, false)
+        set(value) = prefs.edit().putBoolean(KEY_IS_LIVE, value).apply()
+
+    var lastLiveTimestamp: Long
+        get() = prefs.getLong(KEY_LAST_LIVE, 0L)
+        set(value) = prefs.edit().putLong(KEY_LAST_LIVE, value).apply()
+
+    var storageScopeMode: String
+        get() = prefs.getString(KEY_STORAGE_SCOPE_MODE, "ALL") ?: "ALL"
+        set(value) = prefs.edit().putString(KEY_STORAGE_SCOPE_MODE, value).apply()
+
+    var customFolderPath: String?
+        get() = prefs.getString(KEY_CUSTOM_FOLDER_PATH, null)
+        set(value) = prefs.edit().putString(KEY_CUSTOM_FOLDER_PATH, value).apply()
+
+    var customFolderUri: String?
+        get() = prefs.getString(KEY_CUSTOM_FOLDER_URI, null)
+        set(value) = prefs.edit().putString(KEY_CUSTOM_FOLDER_URI, value).apply()
+
+    var customFolderDisplayName: String?
+        get() = prefs.getString(KEY_CUSTOM_FOLDER_NAME, null)
+        set(value) = prefs.edit().putString(KEY_CUSTOM_FOLDER_NAME, value).apply()
+
+    var connectedUsersJson: String?
+        get() = prefs.getString(KEY_CONNECTED_USERS, null)
+        set(value) = prefs.edit().putString(KEY_CONNECTED_USERS, value).apply()
 
     fun clear() = prefs.edit().clear().apply()
 
@@ -66,7 +89,15 @@ class SecureStorage(context: Context) {
         private const val KEY_BROKER_URL = "broker_base_url"
         private const val KEY_DEVICE_ID = "device_id"
         private const val KEY_DEVICE_TOKEN = "device_token"
+        private const val KEY_USER_EMAIL = "user_email"
         private const val KEY_MASTER_KEY = "master_key"
         private const val KEY_NODE_ENABLED = "node_enabled"
+        private const val KEY_IS_LIVE = "is_live"
+        private const val KEY_LAST_LIVE = "last_live"
+        private const val KEY_STORAGE_SCOPE_MODE = "storage_scope_mode"
+        private const val KEY_CUSTOM_FOLDER_PATH = "custom_folder_path"
+        private const val KEY_CUSTOM_FOLDER_URI = "custom_folder_uri"
+        private const val KEY_CUSTOM_FOLDER_NAME = "custom_folder_name"
+        private const val KEY_CONNECTED_USERS = "connected_users"
     }
 }

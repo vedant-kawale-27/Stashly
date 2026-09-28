@@ -1,8 +1,101 @@
 <resources>
-    <string name="app_name">NimbusNode</string>
-    <string name="notification_channel_name">Storage node</string>
-    <string name="notification_title">NimbusNode is active</string>
-    <string name="notification_text_connecting">Connecting to broker…</string>
-    <string name="notification_text_online">Online — files reachable from anywhere</string>
+    <string name="app_name">Stashly Node</string>
+    <string name="notification_channel_name">Stashly Storage Node</string>
+    <string name="notification_title">Stashly Node is active</string>
+    <string name="notification_text_connecting">Connecting to Stashly broker…</string>
+    <string name="notification_text_online">Online — serving encrypted files securely</string>
     <string name="notification_text_offline">No network — will reconnect automatically</string>
+
+    <string name="nav_storage">Storage &amp; Clients</string>
+    <string name="nav_connect">New Connection</string>
+    <string name="nav_settings">Settings &amp; Perms</string>
+
+    <string name="title_storage_clients">Storage &amp; Connected Clients</string>
+    <string name="title_connect_new">Connect New Device</string>
+    <string name="title_settings_perms">Settings &amp; Permissions</string>
+
+    <string name="storage_main_format">%1$d%% Used (%2$s / %3$s)</string>
+    <string name="storage_gb_format">%1$.1f GB</string>
+    <string name="storage_calc_error">Storage calculation error</string>
+
+    <string name="node_status_not_paired">⚠️ Node Not Paired</string>
+    <string name="node_info_not_paired">Open \'New Connection\' to pair with broker.</string>
+    <string name="node_status_active">🟢 Active &amp; Serving Files</string>
+    <string name="node_status_stopped">⚪ Node Paired (Stopped)</string>
+    <string name="node_broker_format">Broker: %1$s</string>
+
+    <string name="btn_start_node">Start Node</string>
+    <string name="btn_stop_node">Stop Node</string>
+    <string name="btn_granted">Granted</string>
+
+    <string name="clients_not_paired">• No paired accounts\n• Go to \'New Connection\' page to pair</string>
+    <string name="account_email_default">Not paired</string>
+    <string name="account_email_format">%1$s</string>
+    <string name="account_email_with_role">%1$s (%2$s)</string>
+    <string name="status_live_now">🟢 Live Now (WebSocket Active)</string>
+    <string name="status_offline_reconnecting">⚪ Offline / Reconnecting</string>
+    <string name="status_paused">🟡 Node Service Paused</string>
+    <string name="last_live_active">🟢 Currently Active</string>
+    <string name="last_live_never">Never recorded</string>
+    <string name="last_live_format">%1$s</string>
+    <string name="client_security_info">• Client: Stashly Web Dashboard\n• Security: Hardware Keystore AES-256 Active</string>
+    <string name="last_synced_format">Last synced: %1$s</string>
+
+    <string name="battery_status_allowed">Status: Allowed (Optimal for background sync)</string>
+    <string name="battery_status_active">Status: Optimization active (May sleep)</string>
+    <string name="storage_status_full">Status: Full Access Granted</string>
+    <string name="storage_status_limited">Status: Limited Access (Tap grant)</string>
+
+    <string name="toast_pair_first">Pair device first</string>
+    <string name="toast_node_stopped">Storage node stopped</string>
+    <string name="toast_node_started">Storage node started</string>
+    <string name="toast_syncing">Syncing files with Stashly broker…</string>
+    <string name="toast_sync_success">Sync completed successfully!</string>
+    <string name="toast_fill_fields">Please fill in all three fields</string>
+    <string name="toast_paired_success">Paired successfully! Node is active.</string>
+    <string name="toast_storage_default">Storage access granted by default on this OS version</string>
+    <string name="toast_no_key">No master key generated yet. Pair the device first.</string>
+    <string name="toast_node_cleared">Node credentials cleared</string>
+
+    <string name="storage_scope_scoped">📁 Scoped: %1$s</string>
+    <string name="storage_scope_all">🌐 All Storage</string>
+    <string name="qr_scan_prompt">Point camera at Stashly Web QR Code</string>
+    <string name="toast_scope_folder">Node access scoped to folder: %1$s</string>
+    <string name="toast_scope_reset">Storage scope reset to entire phone</string>
+    <string name="toast_qr_autopair">QR Code scanned! Auto-pairing with broker…</string>
+    <string name="toast_qr_code_loaded">Pairing code loaded: %1$s</string>
+    <string name="toast_qr_parse_error">Failed to parse QR code: %1$s</string>
+    <string name="toast_sync_error">Sync error: %1$s</string>
+    <string name="toast_pairing_error_network">Cannot reach broker at %1$s. Ensure phone and broker are on the same Wi-Fi network or scan QR code.</string>
+    <string name="toast_pairing_error_general">Pairing failed: %1$s</string>
+    <string name="storage_overview_title">PHONE STORAGE OVERVIEW</string>
+    <string name="storage_used_label">Used Space</string>
+    <string name="storage_free_label">Free Available</string>
+    <string name="storage_total_label">Total Storage</string>
+
+    <string name="storage_scope_folder_status">Current Scope: 📁 Folder \"%1$s\"</string>
+    <string name="storage_scope_all_status">Current Scope: 🌐 All Internal Storage (/storage/emulated/0)</string>
+    <string name="storage_restricted_to">Restricted to: %1$s</string>
+    <string name="storage_full_access_desc">Full filesystem access granted (indexes all files &amp; directories).</string>
+    <string name="storage_limited_access_desc">Limited access. Grant full storage or pick a specific folder above.</string>
+    <string name="btn_choose_folder">📁 Choose Folder</string>
+    <string name="btn_change_folder">📁 Change Folder</string>
+    <string name="btn_all_storage">🌐 All Storage</string>
+    <string name="toast_folder_picker_error">Cannot open folder picker: %1$s</string>
+    <string name="toast_scope_internal_all">Access granted to entire internal storage</string>
+    <string name="folder_selected_default">Selected Folder</string>
+    <string name="role_owner">Owner</string>
+    <string name="role_viewer">Connected Client</string>
+    <string name="icon_format">%1$s </string>
+
+    <string name="btn_pairing_progress">Pairing with broker…</string>
+    <string name="btn_pair_submit">Pair &amp; Start Storage Node</string>
+
+    <string name="dialog_master_key_title">Device Master Key</string>
+    <string name="dialog_master_key_msg">Your 256-bit hardware master key:\n\n%1$s\n\n(Copied to clipboard)\n\nPaste this in the web explorer to decrypt your files.</string>
+    <string name="dialog_reset_title">Reset Node Credentials?</string>
+    <string name="dialog_reset_msg">This will unlink the device from the broker and stop the storage service.</string>
+    <string name="dialog_btn_reset">Reset</string>
+    <string name="dialog_btn_cancel">Cancel</string>
+    <string name="dialog_btn_ok">OK</string>
 </resources>

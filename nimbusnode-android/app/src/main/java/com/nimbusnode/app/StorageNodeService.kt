@@ -15,30 +15,26 @@ import androidx.core.app.NotificationCompat
  * The always-running piece: keeps one persistent WebSocket connection to the
  * broker alive so this phone stays reachable for file requests regardless of
  * whether it's physically nearby. Runs as a foreground service with a
- * visible notification, which is required on Android 8+ for any
- * long-lived background work and is what keeps the OS from killing it
- * outright (OEM battery managers are the remaining risk — see MainActivity's
- * battery-optimization prompt).
+ * visible notification.
  */
 class StorageNodeService : Service() {
 
     private lateinit var socketClient: BrokerSocketClient
     private lateinit var connectivityManager: ConnectivityManager
+    private lateinit var storage: SecureStorage
     private var currentState: BrokerSocketClient.State = BrokerSocketClient.State.CONNECTING
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
-            // Network came back (e.g. left airplane mode, joined Wi-Fi) —
-            // nudge a reconnect rather than waiting out the backoff timer.
             socketClient.start()
         }
     }
 
     override fun onCreate() {
         super.onCreate()
-        val storage = SecureStorage(this)
+        storage = SecureStorage(this)
         val keyManager = KeyManager(storage)
-        val fileVault = FileVault(this, keyManager)
+        val fileVault = FileVault(this, keyManager, storage)
 
         socketClient = BrokerSocketClient(
             brokerBaseUrl = storage.brokerBaseUrl ?: "",
@@ -60,12 +56,14 @@ class StorageNodeService : Service() {
         if (intent?.action == ACTION_SYNC_NOW && ::socketClient.isInitialized) {
             socketClient.pushFileSync()
         }
-        // Sticky: if the OS kills the process under memory pressure, ask it
-        // to recreate the service (without redelivering the last intent).
         return START_STICKY
     }
 
     override fun onDestroy() {
+        if (::storage.isInitialized) {
+            storage.isLive = false
+            storage.lastLiveTimestamp = System.currentTimeMillis()
+        }
         socketClient.stop()
         connectivityManager.unregisterNetworkCallback(networkCallback)
         super.onDestroy()
@@ -75,6 +73,13 @@ class StorageNodeService : Service() {
 
     private fun updateNotification(state: BrokerSocketClient.State) {
         currentState = state
+        if (::storage.isInitialized) {
+            val isOnline = (state == BrokerSocketClient.State.ONLINE)
+            storage.isLive = isOnline
+            if (isOnline) {
+                storage.lastLiveTimestamp = System.currentTimeMillis()
+            }
+        }
         val manager = getSystemService(NotificationManager::class.java)
         manager.notify(NOTIFICATION_ID, buildNotification(state))
     }
@@ -105,7 +110,7 @@ class StorageNodeService : Service() {
         val channel = NotificationChannel(
             CHANNEL_ID,
             getString(R.string.notification_channel_name),
-            NotificationManager.IMPORTANCE_LOW // no sound/heads-up for a status notification
+            NotificationManager.IMPORTANCE_LOW
         )
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }

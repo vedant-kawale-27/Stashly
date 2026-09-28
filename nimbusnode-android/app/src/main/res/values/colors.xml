@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="primary">#0891B2</color>
+    <color name="primary_dark">#0E7490</color>
+    <color name="primary_light">#E0F2FE</color>
+    <color name="accent">#06B6D4</color>
+    
+    <color name="background_light">#F8FAFC</color>
+    <color name="surface_light">#FFFFFF</color>
+    <color name="surface_subtle_light">#F1F5F9</color>
+    
+    <color name="text_primary_light">#0F172A</color>
+    <color name="text_secondary_light">#64748B</color>
+    <color name="border_light">#E2E8F0</color>
+    
+    <color name="emerald">#10B981</color>
+    <color name="emerald_bg">#DCFCE7</color>
+    <color name="amber">#F59E0B</color>
+    <color name="rose">#EF4444</color>
+    <color name="rose_bg">#FFE4E6</color>
+</resources>

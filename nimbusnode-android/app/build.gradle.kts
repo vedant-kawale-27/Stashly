@@ -44,6 +44,10 @@ dependencies {
     // WebSocket client to the broker
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
+    // QR Code Scanning
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+    implementation("com.google.zxing:core:3.5.3")
+
     // Coroutines for background work
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 }

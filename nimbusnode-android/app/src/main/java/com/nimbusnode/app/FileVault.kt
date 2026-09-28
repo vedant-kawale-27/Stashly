@@ -35,25 +35,59 @@ data class FileSyncEntry(
  * produce the same ciphertext twice — build that before pointing this at
  * anything you wouldn't want the broker operator to see the names of.
  */
-class FileVault(private val context: Context, private val keyManager: KeyManager) {
+class FileVault(
+    private val context: Context,
+    private val keyManager: KeyManager,
+    private val storage: SecureStorage? = null
+) {
 
     /** True once the user has granted "All files access" in system settings. */
     fun hasFullStorageAccess(): Boolean =
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && Environment.isExternalStorageManager()
 
-    private val vaultDir: File
-        get() = if (hasFullStorageAccess()) {
-            Environment.getExternalStorageDirectory() // whole "Internal storage" root
-        } else {
-            // Fallback for devices below API 30 or before access is granted:
-            // only this app's own private folder is guaranteed accessible
-            // without extra permissions.
-            File(context.getExternalFilesDir(null), "vault").apply { mkdirs() }
+    val vaultDir: File
+        get() {
+            val scopeMode = storage?.storageScopeMode ?: "ALL"
+            val customPath = storage?.customFolderPath
+
+            if (scopeMode == "CUSTOM_FOLDER" && !customPath.isNullOrEmpty()) {
+                val f = File(customPath)
+                if (f.exists() && f.isDirectory) {
+                    return f
+                }
+            }
+
+            return if (hasFullStorageAccess()) {
+                Environment.getExternalStorageDirectory() // whole "Internal storage" root
+            } else {
+                // Fallback for devices below API 30 or before access is granted:
+                File(context.getExternalFilesDir(null), "vault").apply { mkdirs() }
+            }
         }
 
-    // Skip other apps' private data (also excluded by the OS on most
-    // devices regardless) and anything under our own cache/output paths so
-    // we don't recursively re-encrypt our own encrypted cache.
+    fun getScopeDescription(): String {
+        val scopeMode = storage?.storageScopeMode ?: "ALL"
+        val customName = storage?.customFolderDisplayName
+        val customPath = storage?.customFolderPath
+
+        return if (scopeMode == "CUSTOM_FOLDER" && (!customName.isNullOrEmpty() || !customPath.isNullOrEmpty())) {
+            customName ?: customPath?.substringAfterLast(File.separatorChar) ?: "Custom Folder"
+        } else if (hasFullStorageAccess()) {
+            "All Internal Storage (Whole Phone Filesystem)"
+        } else {
+            "App Sandbox Vault (Limited Access)"
+        }
+    }
+
+    fun clearVaultCache() {
+        try {
+            cacheDir.deleteRecursively()
+            cacheDir.mkdirs()
+            if (metadataFile.exists()) metadataFile.delete()
+        } catch (_: Exception) {}
+    }
+
+    // Skip other apps' private data and android cache
     private val excludedTopLevelDirs = setOf("Android")
 
     private val cacheDir: File
@@ -76,26 +110,37 @@ class FileVault(private val context: Context, private val keyManager: KeyManager
 
         root.walkTopDown()
             .onEnter { dir -> dir == root || dir.relativeTo(root).path.substringBefore(File.separatorChar) !in excludedTopLevelDirs }
-            .filter { it.isFile }
-            .forEach { file ->
-                val relPath = "/" + file.relativeTo(root).path.replace(File.separatorChar, '/')
-                val existing = metadata.optJSONObject(relPath)
-                val unchanged = existing != null && existing.optLong("sourceLastModified") == file.lastModified()
+            .forEach { item ->
+                if (item == root) return@forEach
+                val relPath = "/" + item.relativeTo(root).path.replace(File.separatorChar, '/')
+                if (item.isDirectory) {
+                    entries += FileSyncEntry(
+                        path = relPath,
+                        name = item.name,
+                        sizeBytes = 0L,
+                        contentHash = "directory",
+                        mimeType = "inode/directory",
+                        encryptedDek = ""
+                    )
+                } else if (item.isFile) {
+                    val existing = metadata.optJSONObject(relPath)
+                    val unchanged = existing != null && existing.optLong("sourceLastModified") == item.lastModified()
 
-                val record = if (unchanged) {
-                    existing!!
-                } else {
-                    reEncrypt(file, relPath).also { metadata.put(relPath, it) }
+                    val record = if (unchanged) {
+                        existing!!
+                    } else {
+                        reEncrypt(item, relPath).also { metadata.put(relPath, it) }
+                    }
+
+                    entries += FileSyncEntry(
+                        path = relPath,
+                        name = item.name,
+                        sizeBytes = record.getLong("sizeBytes"),
+                        contentHash = record.getString("contentHash"),
+                        mimeType = record.optString("mimeType", null),
+                        encryptedDek = record.getString("wrappedDek")
+                    )
                 }
-
-                entries += FileSyncEntry(
-                    path = relPath,
-                    name = file.name,
-                    sizeBytes = record.getLong("sizeBytes"),
-                    contentHash = record.getString("contentHash"),
-                    mimeType = record.optString("mimeType", null),
-                    encryptedDek = record.getString("wrappedDek")
-                )
             }
 
         saveMetadata(metadata)

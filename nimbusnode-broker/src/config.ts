@@ -1,4 +1,11 @@
 import "dotenv/config";
+import path from "path";
+import fs from "fs";
+
+// Fallback to local SQLite file database if DATABASE_URL is not set in env
+if (!process.env.DATABASE_URL) {
+  process.env.DATABASE_URL = "file:./dev.db";
+}
 
 function required(name: string, fallback?: string): string {
   const val = process.env[name] ?? fallback;
@@ -8,11 +15,21 @@ function required(name: string, fallback?: string): string {
   return val;
 }
 
+const storageDir = process.env.STORAGE_DIR || path.resolve(process.cwd(), "storage", "cache");
+if (!fs.existsSync(storageDir)) {
+  try {
+    fs.mkdirSync(storageDir, { recursive: true });
+  } catch {
+    // ignore if already exists or permission issues
+  }
+}
+
 export const config = {
   port: Number(process.env.PORT ?? 4000),
   nodeEnv: process.env.NODE_ENV ?? "development",
-  jwtSecret: required("JWT_SECRET"),
+  jwtSecret: required("JWT_SECRET", "stashly-super-secure-jwt-secret-key-2026"),
   jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? "7d",
   pairingTokenTtlSeconds: Number(process.env.PAIRING_TOKEN_TTL_SECONDS ?? 300),
   deviceFetchTimeoutMs: Number(process.env.DEVICE_FETCH_TIMEOUT_MS ?? 15000),
+  storageDir,
 };

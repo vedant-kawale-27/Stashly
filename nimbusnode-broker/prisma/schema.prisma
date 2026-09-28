@@ -1,11 +1,10 @@
-// NimbusNode broker — data model
+// Stashly broker — data model
 // Note: the broker NEVER stores plaintext file content or unwrapped encryption
 // keys. `encryptedDek` and any cached blobs are opaque ciphertext produced by
-// the client/device; only the paired devices hold the master key needed to
-// decrypt them.
+// the client/device; only paired devices hold the master key needed to decrypt them.
 
 datasource db {
-  provider = "postgresql"
+  provider = "sqlite"
   url      = env("DATABASE_URL")
 }
 
@@ -19,42 +18,57 @@ model User {
   passwordHash String
   createdAt    DateTime @default(now())
 
-  devices        Device[]
+  userDevices    UserDevice[]
   pairingTokens  PairingToken[]
 }
 
 model Device {
-  id            String   @id @default(uuid())
-  userId        String
-  name          String // e.g. "Vedant's Pixel 8"
-  status        String   @default("offline") // "online" | "offline"
-  lastSeenAt    DateTime?
-  storageQuotaMb Int      @default(0) // how much local storage this device has offered
-  createdAt     DateTime @default(now())
+  id             String      @id @default(uuid())
+  name           String      // e.g. "Vedant's Pixel 8"
+  platform       String      @default("android") // "android" | "windows" | "ios" | "linux"
+  osVersion      String?
+  appVersion     String?
+  status         String      @default("offline") // "online" | "offline"
+  lastSeenAt     DateTime?
+  storageQuotaMb Int         @default(0) // how much local storage this device has offered
+  createdAt      DateTime    @default(now())
 
-  user  User        @relation(fields: [userId], references: [id])
-  files FileEntry[]
+  files       FileEntry[]
+  userDevices UserDevice[]
+}
 
+model UserDevice {
+  id        String   @id @default(uuid())
+  userId    String
+  deviceId  String
+  role      String   @default("owner") // "owner" | "viewer" | "editor"
+  createdAt DateTime @default(now())
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, deviceId])
   @@index([userId])
+  @@index([deviceId])
 }
 
 model FileEntry {
   id            String    @id @default(uuid())
   deviceId      String
-  path          String // virtual path, e.g. "/Documents/report.pdf"
+  path          String    // virtual path, e.g. "/Documents/report.pdf"
   name          String
   sizeBytes     Int
-  contentHash   String // hash of the CIPHERTEXT, for integrity checks only
+  contentHash   String    // hash of the CIPHERTEXT, for integrity checks only
   mimeType      String?
-  encryptedDek  String // wrapped per-file data key, opaque to the broker
+  encryptedDek  String    // wrapped per-file data key, opaque to the broker
   isCached      Boolean   @default(false)
-  cacheKey      String? // pointer into blob storage (S3/MinIO) if cached
+  cacheKey      String?   // pointer into local file storage or blob storage
   cachedAt      DateTime?
   lastAccessAt  DateTime?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
-  device Device @relation(fields: [deviceId], references: [id])
+  device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
 
   @@unique([deviceId, path])
   @@index([deviceId])
@@ -68,5 +82,7 @@ model PairingToken {
   expiresAt DateTime
   createdAt DateTime @default(now())
 
-  user User @relation(fields: [userId], references: [id])
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
