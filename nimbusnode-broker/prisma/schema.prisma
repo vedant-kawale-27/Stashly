@@ -4,7 +4,7 @@
 // the client/device; only paired devices hold the master key needed to decrypt them.
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
