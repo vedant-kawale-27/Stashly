@@ -14,8 +14,6 @@ yarn-error.log*
 **/*.tsbuildinfo
 
 # Broker / Prisma
-**/*.db
-**/*.db-journal
 nimbusnode-broker/storage/
 
 # Android / Gradle

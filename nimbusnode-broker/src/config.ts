@@ -3,13 +3,9 @@ import path from "path";
 import fs from "fs";
 
 const nodeEnv = (process.env.NODE_ENV ?? "development").toLowerCase();
-const isProduction = nodeEnv === "production";
-
-// Development is intentionally self-contained. Production must always point at PostgreSQL.
-if (!isProduction) {
-  process.env.DATABASE_URL = "file:./dev.db";
-} else if (!process.env.DATABASE_URL?.startsWith("postgresql://") && !process.env.DATABASE_URL?.startsWith("postgres://")) {
-  throw new Error("Production requires DATABASE_URL to start with postgresql:// or postgres://");
+const databaseUrl = process.env.DATABASE_URL;
+if (!databaseUrl?.startsWith("postgresql://") && !databaseUrl?.startsWith("postgres://")) {
+  throw new Error("DATABASE_URL must be a PostgreSQL URL starting with postgresql:// or postgres://");
 }
 
 function required(name: string, fallback?: string): string {

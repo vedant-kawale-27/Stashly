@@ -13,8 +13,7 @@ that only the user's own devices can unwrap. See "Encryption model" below.
 
 - Express (REST API)
 - `ws` (WebSocket relay to paired phones)
-- Prisma + SQLite for local dev (swap the datasource to Postgres for prod —
-  one line in `prisma/schema.prisma`)
+- Prisma + PostgreSQL for local development and production
 - JWT for user sessions and long-lived device tokens
 
 ## Setup
@@ -22,7 +21,7 @@ that only the user's own devices can unwrap. See "Encryption model" below.
 ```bash
 npm install
 cp .env.example .env        # then edit JWT_SECRET at minimum
-npm run prisma:migrate      # creates dev.db and applies the schema
+npm run prisma:migrate      # creates/applies the PostgreSQL schema
 npm run dev                 # starts on http://localhost:4000
 ```
 
