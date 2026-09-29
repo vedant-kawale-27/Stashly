@@ -76,6 +76,14 @@ function normalizeScope(body: any) {
 
 // --- Step 1: signed-in user requests a pairing code (6-char code / QR token) ---
 devicesRouter.post("/pairing-tokens", requireAuth, async (req: AuthedRequest, res) => {
+  const user = await prisma.user.findUnique({
+    where: { id: req.user!.userId },
+    select: { id: true },
+  });
+  if (!user) {
+    return res.status(401).json({ error: "Your session is no longer valid. Please sign in again." });
+  }
+
   const token = generatePairingToken();
   const expiresAt = new Date(Date.now() + config.pairingTokenTtlSeconds * 1000);
 
