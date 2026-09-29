@@ -2,6 +2,23 @@ import React, { useEffect, useState } from "react";
 import { BrokerClient, Device } from "../api";
 import { WindowsMountModal } from "./WindowsMountModal";
 
+function formatTimestamp(value?: string | null): string {
+  if (!value) return "Never";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "Unknown" : date.toLocaleString();
+}
+
+function scopeLabel(user: NonNullable<Device["sharedWith"]>[number]): string {
+  if (user.scopeMode === "ALL") return "All internal storage";
+  if (user.scopeMode === "CUSTOM_FILE") {
+    return `File: ${user.scopeName ?? user.scopePath ?? "Selected file"}`;
+  }
+  if (user.scopeMode === "CUSTOM_FOLDER") {
+    return `Folder: ${user.scopeName ?? user.scopePath ?? "Selected folder"}`;
+  }
+  return "No file access selected";
+}
+
 interface Props {
   client: BrokerClient;
   brokerUrl: string;
@@ -57,10 +74,7 @@ export function DeviceList({
   }
 
   async function handleUnpair(device: Device) {
-    const isOwner = device.role === "owner";
-    const msg = isOwner
-      ? `Are you sure you want to remove "${device.name}"? This unlinks the device from Stashly.`
-      : `Are you sure you want to unlink "${device.name}" from your account?`;
+    const msg = `Are you sure you want to remove your connection to "${device.name}"? This does not change access for other clients.`;
 
     if (!confirm(msg)) return;
 
@@ -113,7 +127,6 @@ export function DeviceList({
             {devices.map((d) => {
               const isSelected = selectedDeviceId === d.id;
               const isOnline = d.status === "online";
-              const isOwner = d.role === "owner";
 
               return (
                 <div
@@ -173,24 +186,34 @@ export function DeviceList({
                     </span>
                   </div>
 
-                  {/* Shared user avatars/pills */}
-                  {d.sharedWith && d.sharedWith.length > 1 && (
-                    <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", margin: "6px 0", display: "flex", gap: 4, alignItems: "center" }}>
-                      <span>Shared:</span>
-                      {d.sharedWith.map((u) => (
-                        <span
-                          key={u.userId}
-                          style={{
-                            background: "var(--bg-card)",
-                            border: "1px solid var(--border-subtle)",
-                            borderRadius: "var(--radius-full)",
-                            padding: "1px 8px",
-                            fontWeight: 600
-                          }}
-                        >
-                          {u.email.split("@")[0]}
-                        </span>
-                      ))}
+                  {/* Each linked client keeps its own scope and sharing state. */}
+                  {d.sharedWith && d.sharedWith.length > 0 && (
+                    <div style={{ margin: "10px 0 4px", display: "grid", gap: 6 }}>
+                      <span style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>Connected clients</span>
+                      {d.sharedWith.map((u) => {
+                        const sharingStopped = u.sharingEnabled === false;
+                        const clientOnline = !sharingStopped && u.isLive === true;
+                        return (
+                          <div key={u.userId} style={{ background: "var(--bg-card)", border: "1px solid var(--border-subtle)", borderRadius: "var(--radius-sm)", padding: "7px 9px", fontSize: "0.75rem" }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
+                              <strong style={{ color: "var(--text-main)" }}>{u.email}</strong>
+                              <span style={{ color: sharingStopped ? "#f59e0b" : clientOnline ? "#10b981" : "var(--text-muted)" }}>
+                                {sharingStopped ? "Sharing stopped" : clientOnline ? "Online" : "Offline"}
+                              </span>
+                            </div>
+                            <div style={{ color: "var(--primary)", marginTop: 3 }}>{scopeLabel(u)}</div>
+                            <div style={{ color: "var(--text-muted)", marginTop: 3 }}>
+                              Connected {formatTimestamp(u.connectedAt ?? u.since)} · Last seen {clientOnline ? "Now" : formatTimestamp(u.lastSeenAt)}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {d.sharingEnabled === false && (
+                    <div style={{ color: "#f59e0b", fontSize: "0.78rem", marginTop: 7 }}>
+                      Your access is currently stopped on the Android node.
                     </div>
                   )}
 
@@ -201,8 +224,8 @@ export function DeviceList({
                       <span style={{ fontWeight: 700, color: "var(--text-main)" }} className="font-mono">{d.fileCount ?? 0}</span>
                     </div>
                     <div>
-                      <span style={{ color: "var(--text-muted)", display: "block" }}>Role</span>
-                      <span style={{ fontWeight: 700, color: "var(--text-main)" }}>{isOwner ? "👑 Owner" : "👥 Shared"}</span>
+                      <span style={{ color: "var(--text-muted)", display: "block" }}>Clients</span>
+                      <span style={{ fontWeight: 700, color: "var(--text-main)" }}>{d.sharedWith?.length ?? 0}</span>
                     </div>
                     <div>
                       <span style={{ color: "var(--text-muted)", display: "block" }}>Offered Space</span>
@@ -229,7 +252,7 @@ export function DeviceList({
                     <button
                       className="btn-secondary btn-small"
                       style={{ color: "#ef4444" }}
-                      title={isOwner ? "Remove Node" : "Unlink Node"}
+                      title="Remove my connection"
                       onClick={() => handleUnpair(d)}
                     >
                       🗑️

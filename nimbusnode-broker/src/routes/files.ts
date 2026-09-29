@@ -5,6 +5,7 @@ import { config } from "../config";
 import { prisma } from "../db";
 import { AuthedRequest, requireAuth } from "../middleware";
 import { deviceHub } from "../ws/deviceHub";
+import { isPathAllowed } from "../access";
 
 export const filesRouter = Router();
 
@@ -14,7 +15,7 @@ async function assertCanAccessDevice(userId: string, deviceId: string) {
     include: { device: true },
   });
   if (!link) return null;
-  return link.device;
+  return link;
 }
 
 // GET /files?deviceId=... — list metadata (never file content) for the user's accessible device(s).
@@ -23,7 +24,7 @@ filesRouter.get("/", requireAuth, async (req: AuthedRequest, res) => {
 
   const userDevices = await prisma.userDevice.findMany({
     where: { userId: req.user!.userId, ...(deviceId ? { deviceId } : {}) },
-    select: { deviceId: true },
+    select: { deviceId: true, scopeMode: true, scopePath: true, sharingEnabled: true },
   });
   const deviceIds = userDevices.map((ud) => ud.deviceId);
 
@@ -36,8 +37,12 @@ filesRouter.get("/", requireAuth, async (req: AuthedRequest, res) => {
     orderBy: { path: "asc" },
   });
 
+  const linksByDevice = new Map(userDevices.map((link) => [link.deviceId, link]));
   res.json(
-    files.map((f) => ({
+    files.filter((f) => {
+      const link = linksByDevice.get(f.deviceId);
+      return link ? isPathAllowed(f.path, link) : false;
+    }).map((f) => ({
       ...f,
       deviceOnline: deviceHub.isOnline(f.deviceId),
     }))
@@ -50,8 +55,8 @@ filesRouter.get("/:id/download", requireAuth, async (req: AuthedRequest, res) =>
   const file = await prisma.fileEntry.findUnique({ where: { id: req.params.id } });
   if (!file) return res.status(404).json({ error: "File not found" });
 
-  const device = await assertCanAccessDevice(req.user!.userId, file.deviceId);
-  if (!device) return res.status(404).json({ error: "File not accessible" });
+  const link = await assertCanAccessDevice(req.user!.userId, file.deviceId);
+  if (!link || !isPathAllowed(file.path, link)) return res.status(404).json({ error: "File not accessible for this client" });
 
   const isOnline = deviceHub.isOnline(file.deviceId);
 
@@ -109,7 +114,10 @@ filesRouter.get("/:id/download", requireAuth, async (req: AuthedRequest, res) =>
   }
 
   return res.status(503).json({
-    error: "Device is offline and no cached copy is available on local storage",
-    code: "DEVICE_OFFLINE_NO_CACHE",
+    error: isOnline
+      ? "The Android node did not respond in time and no cached copy is available"
+      : "The Android node is not connected to this broker and no cached copy is available",
+    code: isOnline ? "DEVICE_TIMEOUT_NO_CACHE" : "DEVICE_OFFLINE_NO_CACHE",
+    deviceOnline: isOnline,
   });
 });

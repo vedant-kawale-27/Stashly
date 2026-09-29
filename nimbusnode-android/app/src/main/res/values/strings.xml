@@ -1,7 +1,18 @@
 <resources>
+    <string name="user_access_scope_all">Access: All internal storage</string>
+    <string name="user_access_scope_none">Access: Not shared</string>
+    <string name="user_access_scope_folder">Access: %1$s</string>
+    <string name="user_access_scope_file">Access: File %1$s</string>
+    <string name="device_file_access_allowed">Device file access: Allowed</string>
+    <string name="device_file_access_not_allowed">Device file access: Not granted</string>
+    <string name="client_access_list_title">All connected clients</string>
+    <string name="client_access_managed">Permission is managed by that client.</string>
+    <string name="btn_change_client_access">Change access</string>
     <string name="app_name">Stashly Node</string>
     <string name="notification_channel_name">Stashly Storage Node</string>
     <string name="notification_title">Stashly Node is active</string>
+    <string name="notification_text_broker_unavailable">Broker unavailable - retrying automatically</string>
+    <string name="notification_action_stop">Stop node</string>
     <string name="notification_text_connecting">Connecting to Stashly broker…</string>
     <string name="notification_text_online">Online — serving encrypted files securely</string>
     <string name="notification_text_offline">No network — will reconnect automatically</string>
@@ -53,9 +64,19 @@
     <string name="toast_sync_success">Sync completed successfully!</string>
     <string name="toast_fill_fields">Please fill in all three fields</string>
     <string name="toast_paired_success">Paired successfully! Node is active.</string>
+    <string name="dialog_pairing_title">Pairing Android storage node</string>
+    <string name="dialog_pairing_msg">Connecting securely to the broker and preparing this client access...</string>
+    <string name="dialog_access_scope_title">Choose client file access</string>
+    <string name="dialog_access_scope_msg">Choose which files %1$s can access from this Android device.</string>
+    <string name="scope_option_all">All internal storage</string>
+    <string name="scope_option_folder">Only a specific folder</string>
+    <string name="scope_option_file">Only a specific file</string>
+    <string name="toast_access_scope_error">Could not save client access: %1$s</string>
+    <string name="toast_access_scope_saved">Client file access updated.</string>
     <string name="toast_storage_default">Storage access granted by default on this OS version</string>
     <string name="toast_no_key">No master key generated yet. Pair the device first.</string>
-    <string name="toast_node_cleared">Node credentials cleared</string>
+    <string name="toast_node_cleared">Node credentials and broker data cleared</string>
+    <string name="toast_reset_error">Could not complete the full node reset: %1$s</string>
 
     <string name="storage_scope_scoped">📁 Scoped: %1$s</string>
     <string name="storage_scope_all">🌐 All Storage</string>
@@ -74,6 +95,7 @@
     <string name="storage_total_label">Total Storage</string>
 
     <string name="storage_scope_folder_status">Current Scope: 📁 Folder \"%1$s\"</string>
+    <string name="folder_selected_default">Selected Folder</string>
     <string name="storage_scope_all_status">Current Scope: 🌐 All Internal Storage (/storage/emulated/0)</string>
     <string name="storage_restricted_to">Restricted to: %1$s</string>
     <string name="storage_full_access_desc">Full filesystem access granted (indexes all files &amp; directories).</string>
@@ -83,19 +105,46 @@
     <string name="btn_all_storage">🌐 All Storage</string>
     <string name="toast_folder_picker_error">Cannot open folder picker: %1$s</string>
     <string name="toast_scope_internal_all">Access granted to entire internal storage</string>
-    <string name="folder_selected_default">Selected Folder</string>
-    <string name="role_owner">Owner</string>
-    <string name="role_viewer">Connected Client</string>
-    <string name="icon_format">%1$s </string>
+    <string name="client_platform_title">💻 Client: Stashly Web Dashboard</string>
+    <string name="client_security_title">🔒 Security: Hardware Keystore AES-256 E2EE Active</string>
+    <string name="user_live_status_live">⚡ Status: 🟢 Live Now (WebSocket Active)</string>
+    <string name="user_live_status_offline">⚡ Status: ⚪ Offline / Standby</string>
+    <string name="user_live_status_paused">⚡ Status: 🟡 Node Service Paused</string>
+    <string name="user_last_active_now">🕒 Last Active: 🟢 Active now</string>
+    <string name="user_live_status_stopped">Sharing stopped</string>
+    <string name="user_last_active_sharing_stopped">Client sharing is paused</string>
+    <string name="user_last_active_format">🕒 Last Active: %1$s</string>
 
     <string name="btn_pairing_progress">Pairing with broker…</string>
     <string name="btn_pair_submit">Pair &amp; Start Storage Node</string>
 
     <string name="dialog_master_key_title">Device Master Key</string>
-    <string name="dialog_master_key_msg">Your 256-bit hardware master key:\n\n%1$s\n\n(Copied to clipboard)\n\nPaste this in the web explorer to decrypt your files.</string>
+    <string name="dialog_master_key_msg">Your 256-bit hardware master key:\n\n%1$s\n\nEnter this key in the web explorer to decrypt your files.</string>
+    <string name="dialog_btn_copy_key">Copy Key</string>
+    <string name="toast_master_key_copied">Master key copied to clipboard.</string>
     <string name="dialog_reset_title">Reset Node Credentials?</string>
-    <string name="dialog_reset_msg">This will unlink the device from the broker and stop the storage service.</string>
+    <string name="dialog_reset_msg">This permanently removes every client connection, file record, cached encrypted data, device credential, and master key. The node will stop and must be paired again.</string>
+    <string name="dialog_unlinked_title">⚠️ Connection Removed</string>
+    <string name="dialog_unlinked_msg">All client connections to this storage node were removed from the Stashly Web Dashboard.\n\nThe node service has stopped because no connected clients remain. Reconnect from the New Connection tab when you are ready.</string>
+    <string name="toast_node_unlinked">Node disconnected: Connection removed on web dashboard</string>
     <string name="dialog_btn_reset">Reset</string>
     <string name="dialog_btn_cancel">Cancel</string>
+    <string name="dialog_client_removed_title">Client connection removed</string>
+    <string name="dialog_client_removed_msg">%1$s connection was removed from this Android node.</string>
+    <string name="client_details_msg">Status: %1$s\n%2$s\nConnected since: %3$s</string>
+    <string name="client_status_online">Online</string>
+    <string name="client_status_offline">Offline</string>
+    <string name="client_status_sharing_stopped">Sharing stopped</string>
+    <string name="client_last_seen_now">Last seen: Now</string>
+    <string name="client_last_seen_at">Last seen: %1$s</string>
+    <string name="btn_stop_sharing">Stop sharing</string>
+    <string name="btn_start_sharing">Start sharing</string>
+    <string name="btn_remove_client_connection">Remove connection</string>
+    <string name="dialog_confirm_client_action_title">Confirm client action</string>
+    <string name="dialog_confirm_remove_client_msg">Remove %1$s from this Android node? This will delete their connection.</string>
+    <string name="dialog_confirm_sharing_msg">%2$s for %1$s?</string>
+    <string name="toast_client_sharing_stopped">Sharing stopped for this client.</string>
+    <string name="toast_client_sharing_started">Sharing started for this client.</string>
+    <string name="toast_client_connection_removed">Client connection removed.</string>
     <string name="dialog_btn_ok">OK</string>
 </resources>

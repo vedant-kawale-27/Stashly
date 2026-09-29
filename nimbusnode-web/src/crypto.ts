@@ -20,7 +20,7 @@ async function aesGcmDecrypt(rawKey: Uint8Array, blob: ArrayBuffer): Promise<Arr
   const iv = blob.slice(0, IV_LENGTH);
   const ciphertext = blob.slice(IV_LENGTH);
   const key = await importAesKey(rawKey);
-  return crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ciphertext);
+  return crypto.subtle.decrypt({ name: "AES-GCM", iv, tagLength: 128 }, key, ciphertext);
 }
 
 /** Unwrap a per-file DEK using the account master key. */

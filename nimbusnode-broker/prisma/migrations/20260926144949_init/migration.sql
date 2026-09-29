@@ -3,7 +3,7 @@ CREATE TABLE "User" (
     "id" TEXT NOT NULL PRIMARY KEY,
     "email" TEXT NOT NULL,
     "passwordHash" TEXT NOT NULL,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 -- CreateTable
@@ -12,9 +12,9 @@ CREATE TABLE "Device" (
     "userId" TEXT NOT NULL,
     "name" TEXT NOT NULL,
     "status" TEXT NOT NULL DEFAULT 'offline',
-    "lastSeenAt" TIMESTAMP(3),
+    "lastSeenAt" DATETIME,
     "storageQuotaMb" INTEGER NOT NULL DEFAULT 0,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT "Device_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User" ("id") ON DELETE RESTRICT ON UPDATE CASCADE
 );
 
@@ -30,10 +30,10 @@ CREATE TABLE "FileEntry" (
     "encryptedDek" TEXT NOT NULL,
     "isCached" BOOLEAN NOT NULL DEFAULT false,
     "cacheKey" TEXT,
-    "cachedAt" TIMESTAMP(3),
-    "lastAccessAt" TIMESTAMP(3),
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL,
+    "cachedAt" DATETIME,
+    "lastAccessAt" DATETIME,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "FileEntry_deviceId_fkey" FOREIGN KEY ("deviceId") REFERENCES "Device" ("id") ON DELETE RESTRICT ON UPDATE CASCADE
 );
 
@@ -43,8 +43,8 @@ CREATE TABLE "PairingToken" (
     "userId" TEXT NOT NULL,
     "token" TEXT NOT NULL,
     "used" BOOLEAN NOT NULL DEFAULT false,
-    "expiresAt" TIMESTAMP(3) NOT NULL,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "expiresAt" DATETIME NOT NULL,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT "PairingToken_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User" ("id") ON DELETE RESTRICT ON UPDATE CASCADE
 );
 

@@ -10,6 +10,7 @@ const STORAGE_KEYS = {
   token: "stashly_token",
   email: "stashly_email",
   masterKey: "stashly_master_key",
+  masterKeys: "stashly_master_keys",
   theme: "stashly_theme",
 };
 
@@ -22,7 +23,14 @@ const DEFAULT_BROKER_URL =
 export default function App() {
   const [token, setToken] = useState<string>(() => localStorage.getItem(STORAGE_KEYS.token) ?? "");
   const [userEmail, setUserEmail] = useState<string>(() => localStorage.getItem(STORAGE_KEYS.email) ?? "");
-  const [masterKey, setMasterKey] = useState<string>(() => localStorage.getItem(STORAGE_KEYS.masterKey) ?? "");
+  const [legacyMasterKey, setLegacyMasterKey] = useState<string>(() => localStorage.getItem(STORAGE_KEYS.masterKey) ?? "");
+  const [masterKeys, setMasterKeys] = useState<Record<string, string>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem(STORAGE_KEYS.masterKeys) ?? "{}") as Record<string, string>;
+    } catch {
+      return {};
+    }
+  });
   const [theme, setTheme] = useState<"light" | "dark">(() => (localStorage.getItem(STORAGE_KEYS.theme) as "light" | "dark") || "light");
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
   const [authModalOpen, setAuthModalOpen] = useState(false);
@@ -53,13 +61,40 @@ export default function App() {
   }, [userEmail]);
 
   useEffect(() => {
-    if (masterKey) localStorage.setItem(STORAGE_KEYS.masterKey, masterKey);
-    else localStorage.removeItem(STORAGE_KEYS.masterKey);
-  }, [masterKey]);
+    localStorage.setItem(STORAGE_KEYS.masterKeys, JSON.stringify(masterKeys));
+  }, [masterKeys]);
+
+  useEffect(() => {
+    if (!token) return;
+    const presenceClient = new BrokerClient(DEFAULT_BROKER_URL, token);
+    const heartbeat = () => void presenceClient.setPresence(true).catch(() => {});
+    heartbeat();
+    const timer = window.setInterval(heartbeat, 15_000);
+    return () => window.clearInterval(timer);
+  }, [token]);
 
   const client = new BrokerClient(DEFAULT_BROKER_URL, token || undefined);
+  const masterKey = selectedDeviceId ? masterKeys[selectedDeviceId] ?? legacyMasterKey : "";
+
+  function setSelectedDeviceMasterKey(key: string) {
+    if (!selectedDeviceId) return;
+    setMasterKeys((current) => ({ ...current, [selectedDeviceId]: key }));
+  }
+
+  async function clearLocalKeyData() {
+    localStorage.removeItem(STORAGE_KEYS.masterKey);
+    localStorage.removeItem(STORAGE_KEYS.masterKeys);
+    setLegacyMasterKey("");
+    setMasterKeys({});
+
+    if ("caches" in window) {
+      const cacheNames = await window.caches.keys();
+      await Promise.all(cacheNames.map((cacheName) => window.caches.delete(cacheName)));
+    }
+  }
 
   function handleLogout() {
+    void client.setPresence(false).catch(() => {});
     setToken("");
     setUserEmail("");
     setSelectedDeviceId(null);
@@ -200,7 +235,8 @@ export default function App() {
                   client={client}
                   deviceId={selectedDeviceId}
                   masterKey={masterKey}
-                  onMasterKeyChange={setMasterKey}
+                  onMasterKeyChange={setSelectedDeviceMasterKey}
+                  onClearLocalKeyData={clearLocalKeyData}
                 />
               </div>
             </div>

@@ -41,22 +41,16 @@ class FileVault(
     private val storage: SecureStorage? = null
 ) {
 
+    private companion object {
+        const val MASTER_KEY_FINGERPRINT = "__nimbusnode_master_key_fingerprint"
+    }
+
     /** True once the user has granted "All files access" in system settings. */
     fun hasFullStorageAccess(): Boolean =
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && Environment.isExternalStorageManager()
 
     val vaultDir: File
         get() {
-            val scopeMode = storage?.storageScopeMode ?: "ALL"
-            val customPath = storage?.customFolderPath
-
-            if (scopeMode == "CUSTOM_FOLDER" && !customPath.isNullOrEmpty()) {
-                val f = File(customPath)
-                if (f.exists() && f.isDirectory) {
-                    return f
-                }
-            }
-
             return if (hasFullStorageAccess()) {
                 Environment.getExternalStorageDirectory() // whole "Internal storage" root
             } else {
@@ -66,13 +60,7 @@ class FileVault(
         }
 
     fun getScopeDescription(): String {
-        val scopeMode = storage?.storageScopeMode ?: "ALL"
-        val customName = storage?.customFolderDisplayName
-        val customPath = storage?.customFolderPath
-
-        return if (scopeMode == "CUSTOM_FOLDER" && (!customName.isNullOrEmpty() || !customPath.isNullOrEmpty())) {
-            customName ?: customPath?.substringAfterLast(File.separatorChar) ?: "Custom Folder"
-        } else if (hasFullStorageAccess()) {
+        return if (hasFullStorageAccess()) {
             "All Internal Storage (Whole Phone Filesystem)"
         } else {
             "App Sandbox Vault (Limited Access)"
@@ -105,7 +93,15 @@ class FileVault(
     @Synchronized
     fun scanAndSync(): List<FileSyncEntry> {
         val root = vaultDir
-        val metadata = loadMetadata()
+        var metadata = loadMetadata()
+        val masterKeyFingerprint = sha256Hex(keyManager.getOrCreateMasterKey())
+        val keyChanged = metadata.optString(MASTER_KEY_FINGERPRINT) != masterKeyFingerprint
+        if (keyChanged) {
+            // Existing cached ciphertext and wrapped DEKs belong to another
+            // master key. Rebuild them even when source files are unchanged.
+            cacheDir.listFiles()?.forEach { it.deleteRecursively() }
+            metadata = JSONObject()
+        }
         val entries = mutableListOf<FileSyncEntry>()
 
         root.walkTopDown()
@@ -124,7 +120,7 @@ class FileVault(
                     )
                 } else if (item.isFile) {
                     val existing = metadata.optJSONObject(relPath)
-                    val unchanged = existing != null && existing.optLong("sourceLastModified") == item.lastModified()
+                    val unchanged = !keyChanged && existing != null && existing.optLong("sourceLastModified") == item.lastModified()
 
                     val record = if (unchanged) {
                         existing!!
@@ -137,12 +133,13 @@ class FileVault(
                         name = item.name,
                         sizeBytes = record.getLong("sizeBytes"),
                         contentHash = record.getString("contentHash"),
-                        mimeType = record.optString("mimeType", null),
+                        mimeType = record.optString("mimeType").ifEmpty { null },
                         encryptedDek = record.getString("wrappedDek")
                     )
                 }
             }
 
+        metadata.put(MASTER_KEY_FINGERPRINT, masterKeyFingerprint)
         saveMetadata(metadata)
         return entries
     }

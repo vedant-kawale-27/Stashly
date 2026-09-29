@@ -28,9 +28,60 @@ interface PendingFetch {
 class DeviceHub {
   private sockets = new Map<string, WebSocket>(); // deviceId -> socket
   private pending = new Map<string, PendingFetch>(); // requestId -> pending fetch
+  private clientPresence = new Map<string, number>(); // deviceId:userId -> last web heartbeat
 
   isOnline(deviceId: string): boolean {
     return this.sockets.has(deviceId);
+  }
+
+  isClientOnline(deviceId: string, userId: string): boolean {
+    const lastSeen = this.clientPresence.get(`${deviceId}:${userId}`) ?? 0;
+    return Date.now() - lastSeen < 45_000;
+  }
+
+  clientLastSeenAt(deviceId: string, userId: string): string | null {
+    const lastSeen = this.clientPresence.get(`${deviceId}:${userId}`);
+    return lastSeen ? new Date(lastSeen).toISOString() : null;
+  }
+
+  setClientPresence(deviceId: string, userId: string, online: boolean) {
+    const key = `${deviceId}:${userId}`;
+    if (online) this.clientPresence.set(key, Date.now());
+    // Retain the timestamp after logout for last-seen display.
+    this.notifyClientPresence(deviceId, userId, online);
+  }
+
+  notifyDeviceRemoved(deviceId: string, reason = "Node was removed from the Stashly Web Dashboard") {
+    const socket = this.sockets.get(deviceId);
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      try {
+        socket.send(JSON.stringify({ type: "node_unlinked", reason }));
+      } catch {}
+      setTimeout(() => {
+        try {
+          socket.close(4004, reason);
+        } catch {}
+        this.sockets.delete(deviceId);
+      }, 200);
+    }
+  }
+
+  notifyClientRemoved(deviceId: string, userId: string) {
+    const socket = this.sockets.get(deviceId);
+    if (socket?.readyState === WebSocket.OPEN) {
+      try {
+        socket.send(JSON.stringify({ type: "client_unlinked", userId }));
+      } catch {}
+    }
+  }
+
+  notifyClientPresence(deviceId: string, userId: string, online: boolean) {
+    const socket = this.sockets.get(deviceId);
+    if (socket?.readyState === WebSocket.OPEN) {
+      try {
+        socket.send(JSON.stringify({ type: "client_presence", userId, online }));
+      } catch {}
+    }
   }
 
   async registerConnection(deviceId: string, socket: WebSocket) {

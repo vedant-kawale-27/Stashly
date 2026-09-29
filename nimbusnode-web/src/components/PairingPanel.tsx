@@ -16,7 +16,7 @@ export function PairingPanel({ client, onDevicePaired }: Props) {
   const [isOpen, setIsOpen] = useState(false);
   const [tab, setTab] = useState<"qr" | "code">("qr");
 
-  // Dynamic broker URL auto-detection for local LAN or production
+  // Dynamic broker URL auto-detection for local LAN or hosted deployments
   const [brokerUrl, setBrokerUrl] = useState<string>(() => {
     if (client.baseUrl.includes("localhost") || client.baseUrl.includes("127.0.0.1")) {
       if (window.location.hostname && window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1") {
@@ -206,7 +206,7 @@ export function PairingPanel({ client, onDevicePaired }: Props) {
 
                 <div style={{ width: "100%", marginBottom: 12, textAlign: "left" }}>
                   <label style={{ fontSize: "0.75rem", fontWeight: 700, color: "var(--text-muted)", display: "block", marginBottom: 4 }}>
-                    Broker LAN URL for phone:
+                    Broker URL for phone:
                   </label>
                   <input
                     type="text"

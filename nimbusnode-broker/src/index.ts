@@ -21,11 +21,14 @@ app.use(express.json({ limit: "10mb" }));
 app.get("/health", (_req, res) => res.json({ ok: true, status: "healthy", service: "stashly-broker" }));
 
 app.get("/info", (req, res) => {
-  const isProd = config.nodeEnv === "production" || !!process.env.PUBLIC_URL;
   const host = req.get("host") || `localhost:${config.port}`;
   const protocol = req.protocol === "https" || req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
-  
-  const publicUrl = process.env.PUBLIC_URL || (isProd ? `${protocol}://${host}` : null);
+  const hostname = host.split(":")[0].toLowerCase();
+  const isPrivateHost = hostname === "localhost" || hostname === "127.0.0.1" ||
+    hostname.startsWith("10.") || hostname.startsWith("192.168.") ||
+    hostname.startsWith("172.");
+  const publicUrl = process.env.PUBLIC_URL || (!isPrivateHost ? `${protocol}://${host}` : null);
+  const isProd = config.nodeEnv === "production" || !!publicUrl;
   const localIp = getLocalIpAddress();
   const localLanUrl = `http://${localIp}:${config.port}`;
   const suggestedBrokerUrl = publicUrl || localLanUrl;

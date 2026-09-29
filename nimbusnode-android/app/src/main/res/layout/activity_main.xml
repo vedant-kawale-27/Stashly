@@ -100,7 +100,7 @@
                             android:layout_marginTop="12dp"
                             android:max="100"
                             android:progress="45"
-                            android:progressTint="@color/primary" />
+                            android:progressDrawable="@drawable/progress_storage" />
 
                         <LinearLayout
                             android:layout_width="match_parent"
@@ -287,118 +287,62 @@
                             android:id="@+id/layoutPairedClientDetails"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:layout_marginTop="10dp"
+                            android:layout_marginTop="12dp"
                             android:orientation="vertical">
 
-                            <!-- Dynamic Connected Accounts List -->
+                            <!-- Top Global Client & Security Status Box -->
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:background="@color/surface_subtle_light"
+                                android:orientation="vertical"
+                                android:padding="12dp">
+
+                                <TextView
+                                    android:id="@+id/clientPlatformText"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:text="@string/client_platform_title"
+                                    android:textColor="@color/text_primary_light"
+                                    android:textSize="12sp"
+                                    android:textStyle="bold" />
+
+                                <TextView
+                                    android:id="@+id/clientSecurityInfoText"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginTop="3dp"
+                                    android:text="@string/client_security_title"
+                                    android:textColor="@color/text_secondary_light"
+                                    android:textSize="12sp" />
+
+                                <TextView
+                                    android:id="@+id/lastActiveTimestampText"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginTop="4dp"
+                                    android:text="Last synced: --"
+                                    android:textColor="@color/primary"
+                                    android:textSize="12sp"
+                                    android:textStyle="bold" />
+                            </LinearLayout>
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="14dp"
+                                android:layout_marginBottom="8dp"
+                                android:text="PAIRED USER ACCOUNTS"
+                                android:textColor="@color/text_secondary_light"
+                                android:textSize="11sp"
+                                android:textStyle="bold" />
+
+                            <!-- Dynamic List of User Connection Cards -->
                             <LinearLayout
                                 android:id="@+id/layoutConnectedAccountsList"
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
-                                android:layout_marginBottom="8dp"
                                 android:orientation="vertical" />
-
-                            <!-- Fallback Account Email Row -->
-                            <LinearLayout
-                                android:id="@+id/layoutAccountEmailRow"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:layout_marginBottom="6dp"
-                                android:orientation="horizontal">
-
-                                <TextView
-                                    android:layout_width="wrap_content"
-                                    android:layout_height="wrap_content"
-                                    android:text="📧 Account: "
-                                    android:textColor="@color/text_secondary_light"
-                                    android:textSize="13sp"
-                                    android:textStyle="bold" />
-
-                                <TextView
-                                    android:id="@+id/accountEmailText"
-                                    android:layout_width="0dp"
-                                    android:layout_height="wrap_content"
-                                    android:layout_weight="1"
-                                    android:text="Not paired"
-                                    android:textColor="@color/text_primary_light"
-                                    android:textSize="13sp"
-                                    android:textStyle="bold" />
-                            </LinearLayout>
-
-                            <!-- Live Status Row -->
-                            <LinearLayout
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:layout_marginBottom="6dp"
-                                android:orientation="horizontal">
-
-                                <TextView
-                                    android:layout_width="wrap_content"
-                                    android:layout_height="wrap_content"
-                                    android:text="⚡ Status: "
-                                    android:textColor="@color/text_secondary_light"
-                                    android:textSize="13sp"
-                                    android:textStyle="bold" />
-
-                                <TextView
-                                    android:id="@+id/liveStatusText"
-                                    android:layout_width="0dp"
-                                    android:layout_height="wrap_content"
-                                    android:layout_weight="1"
-                                    android:text="⚪ Offline"
-                                    android:textColor="@color/text_primary_light"
-                                    android:textSize="13sp" />
-                            </LinearLayout>
-
-                            <!-- Last Live Row -->
-                            <LinearLayout
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:layout_marginBottom="8dp"
-                                android:orientation="horizontal">
-
-                                <TextView
-                                    android:layout_width="wrap_content"
-                                    android:layout_height="wrap_content"
-                                    android:text="🕒 Last Live: "
-                                    android:textColor="@color/text_secondary_light"
-                                    android:textSize="13sp"
-                                    android:textStyle="bold" />
-
-                                <TextView
-                                    android:id="@+id/lastLiveText"
-                                    android:layout_width="0dp"
-                                    android:layout_height="wrap_content"
-                                    android:layout_weight="1"
-                                    android:text="--"
-                                    android:textColor="@color/text_primary_light"
-                                    android:textSize="13sp" />
-                            </LinearLayout>
-
-                            <View
-                                android:layout_width="match_parent"
-                                android:layout_height="1dp"
-                                android:layout_marginVertical="6dp"
-                                android:background="@color/border_light" />
-
-                            <!-- Security and Client Details -->
-                            <TextView
-                                android:id="@+id/clientSecurityInfoText"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:lineSpacingExtra="3dp"
-                                android:text="• Client: Stashly Web Dashboard\n• Security: Hardware Keystore AES-256 Active"
-                                android:textColor="@color/text_secondary_light"
-                                android:textSize="12sp" />
-
-                            <TextView
-                                android:id="@+id/lastActiveTimestampText"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:layout_marginTop="6dp"
-                                android:text="Last synced: Just now"
-                                android:textColor="@color/text_secondary_light"
-                                android:textSize="11sp" />
 
                         </LinearLayout>
 
@@ -409,7 +353,7 @@
                             android:layout_height="wrap_content"
                             android:layout_marginTop="8dp"
                             android:lineSpacingExtra="4dp"
-                            android:text="• No paired accounts\n• Go to 'New Connection' page to pair"
+                            android:text="@string/clients_not_paired"
                             android:textColor="@color/text_secondary_light"
                             android:textSize="14sp"
                             android:visibility="gone" />
@@ -542,6 +486,9 @@
                             android:layout_marginTop="14dp"
                             android:hint="Broker Server URL"
                             android:textColorHint="@color/text_secondary_light"
+                            app:expandedHintEnabled="false"
+                            app:placeholderText="e.g. https://broker.stashly.app"
+                            app:placeholderTextColor="@color/text_secondary_light"
                             app:boxBackgroundColor="@color/surface_subtle_light"
                             app:boxCornerRadiusBottomEnd="12dp"
                             app:boxCornerRadiusBottomStart="12dp"
@@ -556,11 +503,10 @@
                                 android:id="@+id/inputBrokerUrl"
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
-                                android:hint="e.g. https://broker.stashly.app or scan QR"
                                 android:inputType="textUri"
-                                android:paddingVertical="14dp"
+                                android:paddingTop="17dp"
+                                android:paddingBottom="10dp"
                                 android:textColor="@color/text_primary_light"
-                                android:textColorHint="@color/text_secondary_light"
                                 android:textSize="15sp" />
                         </com.google.android.material.textfield.TextInputLayout>
 
@@ -572,6 +518,9 @@
                             android:layout_marginTop="14dp"
                             android:hint="This Phone Name"
                             android:textColorHint="@color/text_secondary_light"
+                            app:expandedHintEnabled="false"
+                            app:placeholderText="e.g. My Phone"
+                            app:placeholderTextColor="@color/text_secondary_light"
                             app:boxBackgroundColor="@color/surface_subtle_light"
                             app:boxCornerRadiusBottomEnd="12dp"
                             app:boxCornerRadiusBottomStart="12dp"
@@ -587,9 +536,9 @@
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
                                 android:inputType="text"
-                                android:paddingVertical="14dp"
+                                android:paddingTop="17dp"
+                                android:paddingBottom="10dp"
                                 android:textColor="@color/text_primary_light"
-                                android:textColorHint="@color/text_secondary_light"
                                 android:textSize="15sp" />
                         </com.google.android.material.textfield.TextInputLayout>
 
@@ -599,8 +548,11 @@
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="14dp"
-                            android:hint="8-Digit Pairing Code"
+                            android:hint="Pairing Code"
                             android:textColorHint="@color/text_secondary_light"
+                            app:expandedHintEnabled="false"
+                            app:placeholderText="Enter 6 or 8-character code"
+                            app:placeholderTextColor="@color/text_secondary_light"
                             app:boxBackgroundColor="@color/surface_subtle_light"
                             app:boxCornerRadiusBottomEnd="12dp"
                             app:boxCornerRadiusBottomStart="12dp"
@@ -616,9 +568,9 @@
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
                                 android:inputType="textCapCharacters"
-                                android:paddingVertical="14dp"
+                                android:paddingTop="17dp"
+                                android:paddingBottom="10dp"
                                 android:textColor="@color/text_primary_light"
-                                android:textColorHint="@color/text_secondary_light"
                                 android:textSize="16sp"
                                 android:textStyle="bold" />
                         </com.google.android.material.textfield.TextInputLayout>
@@ -716,7 +668,9 @@
                                 android:layout_height="wrap_content"
                                 android:text="Allow"
                                 android:textColor="@color/primary"
-                                app:cornerRadius="20dp" />
+                                app:cornerRadius="20dp"
+                                app:strokeColor="@color/primary"
+                                app:strokeWidth="1dp" />
                         </LinearLayout>
 
                         <View
@@ -729,7 +683,7 @@
                         <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="STORAGE &amp; FOLDER SCOPE"
+                            android:text="DEVICE STORAGE PERMISSION"
                             android:textColor="@color/primary"
                             android:textSize="12sp"
                             android:textStyle="bold" />
@@ -739,7 +693,7 @@
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="4dp"
-                            android:text="Current Scope: All Internal Storage (/storage/emulated/0)"
+                            android:text="Device file access: Not granted"
                             android:textColor="@color/text_primary_light"
                             android:textSize="14sp"
                             android:textStyle="bold" />
@@ -749,7 +703,7 @@
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="2dp"
-                            android:text="Choose a specific folder (e.g. Downloads, DCIM) or grant whole storage access."
+                            android:text="Allow device file access so each client can use its assigned files or folders."
                             android:textColor="@color/text_secondary_light"
                             android:textSize="12sp" />
 
@@ -761,6 +715,7 @@
 
                             <Button
                                 android:id="@+id/btnSelectFolder"
+                                android:visibility="gone"
                                 style="@style/Widget.MaterialComponents.Button"
                                 android:layout_width="0dp"
                                 android:layout_height="wrap_content"
@@ -768,15 +723,17 @@
                                 android:layout_weight="1"
                                 android:backgroundTint="@color/primary"
                                 android:text="📁 Choose Folder"
-                                app:cornerRadius="20dp" />
+                                app:cornerRadius="20dp"
+                                app:strokeColor="@color/primary"
+                                app:strokeWidth="1dp" />
 
                             <Button
                                 android:id="@+id/btnStoragePermission"
                                 style="@style/Widget.MaterialComponents.Button.OutlinedButton"
-                                android:layout_width="0dp"
+                                android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
-                                android:layout_marginStart="6dp"
-                                android:layout_weight="1"
+                                android:layout_marginStart="0dp"
+                                android:layout_weight="0"
                                 android:text="🌐 All Storage"
                                 android:textColor="@color/primary"
                                 app:cornerRadius="20dp" />
@@ -784,6 +741,7 @@
 
                         <Button
                             android:id="@+id/btnResetFolderScope"
+                            android:visibility="gone"
                             style="@style/Widget.MaterialComponents.Button.TextButton"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
@@ -791,6 +749,28 @@
                             android:text="🔄 Reset to Whole Phone Storage"
                             android:textColor="@color/text_secondary_light"
                             android:textSize="12sp" />
+
+                        <View
+                            android:layout_width="match_parent"
+                            android:layout_height="1dp"
+                            android:layout_marginVertical="12dp"
+                            android:background="@color/border_light" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="14dp"
+                            android:text="ALL CONNECTED CLIENTS"
+                            android:textColor="@color/text_secondary_light"
+                            android:textSize="11sp"
+                            android:textStyle="bold" />
+
+                        <LinearLayout
+                            android:id="@+id/layoutClientAccessList"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="8dp"
+                            android:orientation="vertical" />
 
                     </LinearLayout>
                 </com.google.android.material.card.MaterialCardView>
@@ -843,7 +823,7 @@
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="12dp"
-                            android:text="🔑 Show &amp; Copy Master Key"
+                            android:text="🔑 Show Master Key"
                             android:textColor="@color/primary"
                             app:cornerRadius="24dp" />
 

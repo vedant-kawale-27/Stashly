@@ -24,12 +24,29 @@ import android.util.Base64
  */
 class KeyManager(private val storage: SecureStorage) {
 
+    private var cachedMasterKey: ByteArray? = null
+
+    @Synchronized
     fun getOrCreateMasterKey(): ByteArray {
+        cachedMasterKey?.let { return it.copyOf() }
+
         val existing = storage.masterKeyBase64
-        if (existing != null) return Base64.decode(existing, Base64.NO_WRAP)
+        if (existing != null) {
+            val decoded = try {
+                Base64.decode(existing, Base64.NO_WRAP)
+            } catch (e: IllegalArgumentException) {
+                throw IllegalStateException("Stored master key is invalid; reset and pair the node again.", e)
+            }
+            if (decoded.size != 32) {
+                throw IllegalStateException("Stored master key is not a 256-bit key; reset and pair the node again.")
+            }
+            cachedMasterKey = decoded.copyOf()
+            return decoded
+        }
 
         val fresh = AesGcm.randomKey()
         storage.masterKeyBase64 = Base64.encodeToString(fresh, Base64.NO_WRAP)
+        cachedMasterKey = fresh.copyOf()
         return fresh
     }
 

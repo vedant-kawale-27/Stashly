@@ -41,7 +41,10 @@ class StorageNodeService : Service() {
             deviceId = storage.deviceId ?: "",
             deviceToken = storage.deviceToken ?: "",
             fileVault = fileVault,
-            onStateChange = ::updateNotification
+            onStateChange = ::updateNotification,
+            onNodeRemoved = ::handleNodeRemoved,
+            onClientRemoved = ::handleClientRemoved,
+            onClientPresence = ::handleClientPresence
         )
 
         connectivityManager = getSystemService(ConnectivityManager::class.java)
@@ -52,11 +55,71 @@ class StorageNodeService : Service() {
         socketClient.start()
     }
 
+    private fun handleNodeRemoved(reason: String) {
+        val pendingClient = storage.pendingClientRemovedUserId
+        if (::storage.isInitialized) {
+            storage.clear()
+            if (pendingClient != null) {
+                storage.pendingClientRemovedUserId = pendingClient
+                storage.pendingFinalRemovalReason = reason
+            }
+        }
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.cancel(NOTIFICATION_ID)
+        val intent = Intent(ACTION_NODE_UNLINKED).apply {
+            setPackage(packageName)
+            putExtra(EXTRA_UNLINK_REASON, reason)
+        }
+        sendBroadcast(intent)
+        stopSelf()
+    }
+
+    private fun handleClientRemoved(userId: String) {
+        storage.pendingClientRemovedUserId = userId
+        sendBroadcast(Intent(ACTION_CLIENT_UNLINKED).apply {
+            setPackage(packageName)
+            putExtra(EXTRA_CLIENT_USER_ID, userId)
+        })
+    }
+
+    private fun handleClientPresence(userId: String, online: Boolean) {
+        sendBroadcast(Intent(ACTION_CLIENT_PRESENCE).apply {
+            setPackage(packageName)
+            putExtra(EXTRA_CLIENT_USER_ID, userId)
+            putExtra(EXTRA_CLIENT_ONLINE, online)
+        })
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_SYNC_NOW && ::socketClient.isInitialized) {
-            socketClient.pushFileSync()
+        when (intent?.action) {
+            ACTION_STOP_NODE -> {
+                stopNodeFromNotification()
+                return START_NOT_STICKY
+            }
+            ACTION_SYNC_NOW -> {
+                if (::socketClient.isInitialized) {
+                    socketClient.pushFileSync()
+                }
+            }
         }
         return START_STICKY
+    }
+
+    private fun stopNodeFromNotification() {
+        if (::storage.isInitialized) {
+            storage.nodeEnabled = false
+            storage.isLive = false
+            storage.lastLiveTimestamp = System.currentTimeMillis()
+        }
+        if (::socketClient.isInitialized) {
+            // stop() sets the client guard before closing, so this deliberate stop
+            // cannot be reported as an offline network failure or reconnect.
+            socketClient.stop()
+        }
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        getSystemService(NotificationManager::class.java).cancel(NOTIFICATION_ID)
+        stopSelf()
     }
 
     override fun onDestroy() {
@@ -64,8 +127,17 @@ class StorageNodeService : Service() {
             storage.isLive = false
             storage.lastLiveTimestamp = System.currentTimeMillis()
         }
-        socketClient.stop()
-        connectivityManager.unregisterNetworkCallback(networkCallback)
+        if (::socketClient.isInitialized) {
+            socketClient.stop()
+        }
+        if (::connectivityManager.isInitialized) {
+            try {
+                connectivityManager.unregisterNetworkCallback(networkCallback)
+            } catch (_: Exception) {}
+        }
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.cancel(NOTIFICATION_ID)
         super.onDestroy()
     }
 
@@ -88,7 +160,7 @@ class StorageNodeService : Service() {
         val text = when (state) {
             BrokerSocketClient.State.CONNECTING -> getString(R.string.notification_text_connecting)
             BrokerSocketClient.State.ONLINE -> getString(R.string.notification_text_online)
-            BrokerSocketClient.State.OFFLINE -> getString(R.string.notification_text_offline)
+            BrokerSocketClient.State.OFFLINE -> getString(R.string.notification_text_broker_unavailable)
         }
 
         val openAppIntent = PendingIntent.getActivity(
@@ -96,12 +168,19 @@ class StorageNodeService : Service() {
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE
         )
+        val stopIntent = PendingIntent.getService(
+            this,
+            STOP_REQUEST_CODE,
+            Intent(this, StorageNodeService::class.java).setAction(ACTION_STOP_NODE),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.notification_title))
             .setContentText(text)
             .setSmallIcon(android.R.drawable.stat_sys_upload)
             .setContentIntent(openAppIntent)
+            .addAction(android.R.drawable.ic_media_pause, getString(R.string.notification_action_stop), stopIntent)
             .setOngoing(true)
             .build()
     }
@@ -117,7 +196,15 @@ class StorageNodeService : Service() {
 
     companion object {
         const val ACTION_SYNC_NOW = "com.nimbusnode.app.action.SYNC_NOW"
+        const val ACTION_STOP_NODE = "com.nimbusnode.app.action.STOP_NODE"
+        const val ACTION_NODE_UNLINKED = "com.nimbusnode.app.action.NODE_UNLINKED"
+        const val ACTION_CLIENT_UNLINKED = "com.nimbusnode.app.action.CLIENT_UNLINKED"
+        const val ACTION_CLIENT_PRESENCE = "com.nimbusnode.app.action.CLIENT_PRESENCE"
+        const val EXTRA_UNLINK_REASON = "extra_unlink_reason"
+        const val EXTRA_CLIENT_USER_ID = "extra_client_user_id"
+        const val EXTRA_CLIENT_ONLINE = "extra_client_online"
         private const val CHANNEL_ID = "storage_node_status"
         private const val NOTIFICATION_ID = 1
+        private const val STOP_REQUEST_CODE = 2
     }
 }

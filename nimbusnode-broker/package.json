@@ -4,13 +4,14 @@
   "description": "Broker server for NimbusNode — relays file requests between clients and Android storage-node devices, with a metadata DB and optional cloud cache.",
   "main": "dist/index.js",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "dev": "npm run prisma:select && tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/index.js",
-    "prisma:generate": "prisma generate",
-    "prisma:deploy": "prisma migrate deploy",
-    "prisma:reset:render": "prisma migrate reset --force --skip-seed",
-    "prisma:migrate": "prisma migrate dev --name init",
+    "start": "npm run prisma:generate && node dist/index.js",
+    "prisma:select": "node scripts/select-prisma-provider.cjs",
+    "prisma:generate": "npm run prisma:select && prisma generate",
+    "prisma:deploy": "npm run prisma:select && prisma migrate deploy",
+    "prisma:reset:render": "npm run prisma:select && prisma migrate reset --force --skip-seed --skip-generate",
+    "prisma:migrate": "npm run prisma:select && prisma migrate dev --name init",
     "prisma:studio": "prisma studio"
   },
   "dependencies": {

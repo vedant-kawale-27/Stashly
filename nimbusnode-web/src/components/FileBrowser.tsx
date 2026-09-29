@@ -1,12 +1,13 @@
 import React, { useEffect, useState } from "react";
 import { BrokerClient, FileMeta } from "../api";
-import { decryptFile, unwrapDek } from "../crypto";
+import { base64ToBytes, decryptFile, unwrapDek } from "../crypto";
 
 interface Props {
   client: BrokerClient;
   deviceId: string | null;
   masterKey: string;
   onMasterKeyChange: (key: string) => void;
+  onClearLocalKeyData: () => Promise<void>;
 }
 
 function formatBytes(n: number): string {
@@ -45,6 +46,10 @@ function isPreviewable(name: string, mimeType: string | null): boolean {
   );
 }
 
+function isDirectoryEntry(file: FileMeta): boolean {
+  return file.mimeType === "inode/directory" || file.mimeType === "directory" || file.contentHash === "directory";
+}
+
 function pathSegments(path: string): string[] {
   return path.split("/").filter(Boolean);
 }
@@ -55,7 +60,7 @@ function isInsidePath(filePath: string, folderPath: string): boolean {
   return folderSegments.every((segment, index) => fileSegments[index] === segment);
 }
 
-export function FileBrowser({ client, deviceId, masterKey, onMasterKeyChange }: Props) {
+export function FileBrowser({ client, deviceId, masterKey, onMasterKeyChange, onClearLocalKeyData }: Props) {
   const [files, setFiles] = useState<FileMeta[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -64,6 +69,8 @@ export function FileBrowser({ client, deviceId, masterKey, onMasterKeyChange }: 
   const [searchQuery, setSearchQuery] = useState("");
   const [showKeyDrawer, setShowKeyDrawer] = useState(false);
   const [tempKey, setTempKey] = useState("");
+  const [validatingKey, setValidatingKey] = useState(false);
+  const [showKey, setShowKey] = useState(false);
 
   async function refresh() {
     setLoading(true);
@@ -79,6 +86,10 @@ export function FileBrowser({ client, deviceId, masterKey, onMasterKeyChange }: 
 
   useEffect(() => {
     setCurrentPath("");
+    setFiles([]);
+    setTempKey("");
+    setShowKey(false);
+    setError(null);
     refresh();
   }, [deviceId]);
 
@@ -87,6 +98,68 @@ export function FileBrowser({ client, deviceId, masterKey, onMasterKeyChange }: 
     const dek = await unwrapDek(masterKey.trim(), wrappedDek);
     const plaintext = await decryptFile(dek, ciphertext);
     return new Blob([plaintext], { type: file.mimeType ?? "application/octet-stream" });
+  }
+
+  async function applyMasterKey() {
+    const candidate = (tempKey || masterKey).trim();
+    setError(null);
+
+    try {
+      const rawKey = base64ToBytes(candidate);
+      if (rawKey.length !== 32) {
+        throw new Error("The master key must decode to exactly 32 bytes (AES-256).");
+      }
+
+      const testFiles = files.filter((file) => !isDirectoryEntry(file)).slice(0, 5);
+      if (testFiles.length === 0) {
+        onMasterKeyChange(candidate);
+        setShowKeyDrawer(false);
+        setError("The key format is valid, but it cannot be fully verified until an accessible file is available.");
+        return;
+      }
+
+      setValidatingKey(true);
+      let verified = false;
+      let contentError = false;
+      let lastError: any = null;
+
+      for (const testFile of testFiles) {
+        try {
+          const { ciphertext, wrappedDek } = await client.downloadFile(testFile.id);
+          const dek = await unwrapDek(candidate, wrappedDek);
+          verified = true;
+          try {
+            await decryptFile(dek, ciphertext);
+          } catch {
+            contentError = true;
+          }
+          break;
+        } catch (err: any) {
+          lastError = err;
+          if (err.code === "DEVICE_OFFLINE_NO_CACHE" || err.code === "DEVICE_TIMEOUT_NO_CACHE") break;
+        }
+      }
+
+      if (!verified) {
+        throw lastError ?? new Error("The master key could not be verified against the available files.");
+      }
+
+      onMasterKeyChange(candidate);
+      setShowKeyDrawer(false);
+      setError(contentError
+        ? "Master key verified. Some stored file data is stale or corrupted, so it could not be decrypted."
+        : null);
+    } catch (err: any) {
+      if (err.code === "DEVICE_OFFLINE_NO_CACHE" || err.code === "DEVICE_TIMEOUT_NO_CACHE") {
+        setError(`${err.message}. The master key was not changed because it could not be verified.`);
+      } else if (err.name === "OperationError" || err.name === "DataError") {
+        setError("This master key is incorrect for the selected storage node.");
+      } else {
+        setError(err.message ?? "Could not verify the master key.");
+      }
+    } finally {
+      setValidatingKey(false);
+    }
   }
 
   async function handleDownload(file: FileMeta) {
@@ -108,7 +181,9 @@ export function FileBrowser({ client, deviceId, masterKey, onMasterKeyChange }: 
       document.body.removeChild(a);
       setTimeout(() => URL.revokeObjectURL(url), 30_000);
     } catch (err: any) {
-      setError(err.message ?? "Download or decryption failed");
+      setError(err.code === "DEVICE_OFFLINE_NO_CACHE" || err.code === "DEVICE_TIMEOUT_NO_CACHE"
+        ? `${err.message}. Check that the phone is connected to the same broker URL as this web session.`
+        : err.message ?? "Download or decryption failed");
     } finally {
       setBusyFileId(null);
     }
@@ -128,14 +203,15 @@ export function FileBrowser({ client, deviceId, masterKey, onMasterKeyChange }: 
       window.open(url, "_blank");
       setTimeout(() => URL.revokeObjectURL(url), 60_000);
     } catch (err: any) {
-      setError(err.message ?? "Decryption preview failed — verify Master Key.");
+      setError(err.code === "DEVICE_OFFLINE_NO_CACHE" || err.code === "DEVICE_TIMEOUT_NO_CACHE"
+        ? `${err.message}. Check that the phone is connected to the same broker URL as this web session.`
+        : err.message ?? "Decryption preview failed — verify Master Key.");
     } finally {
       setBusyFileId(null);
     }
   }
 
-  const isDirectoryItem = (f: FileMeta) =>
-    f.mimeType === "inode/directory" || f.mimeType === "directory" || f.contentHash === "directory";
+  const isDirectoryItem = isDirectoryEntry;
 
   const filteredFiles = searchQuery.trim()
     ? files.filter((f) => f.name.toLowerCase().includes(searchQuery.toLowerCase()) || f.path.toLowerCase().includes(searchQuery.toLowerCase()))
@@ -218,9 +294,9 @@ export function FileBrowser({ client, deviceId, masterKey, onMasterKeyChange }: 
               <span style={{ fontSize: "0.85rem", fontWeight: 700 }}>Device Master Key (Base64 AES-256)</span>
               <span style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>Kept in local browser memory only</span>
             </div>
-            <div style={{ display: "flex", gap: 8 }}>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               <input
-                type="password"
+                type={showKey ? "text" : "password"}
                 placeholder="Paste 32-byte Base64 key from Android app…"
                 value={tempKey || masterKey}
                 onChange={(e) => setTempKey(e.target.value)}
@@ -236,13 +312,19 @@ export function FileBrowser({ client, deviceId, masterKey, onMasterKeyChange }: 
                 }}
               />
               <button
-                className="btn-primary btn-small"
-                onClick={() => {
-                  onMasterKeyChange(tempKey || masterKey);
-                  setShowKeyDrawer(false);
-                }}
+                className="btn-secondary btn-small"
+                type="button"
+                onClick={() => setShowKey((visible) => !visible)}
+                title={showKey ? "Hide master key" : "Show master key"}
               >
-                Apply Key
+                {showKey ? "Hide" : "Show"}
+              </button>
+              <button
+                className="btn-primary btn-small"
+                onClick={() => void applyMasterKey()}
+                disabled={validatingKey}
+              >
+                {validatingKey ? "Verifying..." : "Verify & Apply Key"}
               </button>
               {masterKey && (
                 <button
@@ -256,6 +338,19 @@ export function FileBrowser({ client, deviceId, masterKey, onMasterKeyChange }: 
                   Clear
                 </button>
               )}
+              <button
+                className="btn-secondary btn-small"
+                type="button"
+                onClick={async () => {
+                  if (!confirm("Clear all saved master keys and browser cache? Android files and broker data will not be deleted.")) return;
+                  await onClearLocalKeyData();
+                  setTempKey("");
+                  setShowKey(false);
+                  setError("Saved master keys and browser cache cleared. Enter the key again to verify it.");
+                }}
+              >
+                Clear Local Data
+              </button>
             </div>
           </div>
         )}

@@ -2,9 +2,14 @@ import "dotenv/config";
 import path from "path";
 import fs from "fs";
 
-// Fallback to local SQLite file database if DATABASE_URL is not set in env
-if (!process.env.DATABASE_URL) {
+const nodeEnv = (process.env.NODE_ENV ?? "development").toLowerCase();
+const isProduction = nodeEnv === "production";
+
+// Development is intentionally self-contained. Production must always point at PostgreSQL.
+if (!isProduction) {
   process.env.DATABASE_URL = "file:./dev.db";
+} else if (!process.env.DATABASE_URL?.startsWith("postgresql://") && !process.env.DATABASE_URL?.startsWith("postgres://")) {
+  throw new Error("Production requires DATABASE_URL to start with postgresql:// or postgres://");
 }
 
 function required(name: string, fallback?: string): string {
@@ -26,7 +31,7 @@ if (!fs.existsSync(storageDir)) {
 
 export const config = {
   port: Number(process.env.PORT ?? 4000),
-  nodeEnv: process.env.NODE_ENV ?? "development",
+  nodeEnv,
   jwtSecret: required("JWT_SECRET", "stashly-super-secure-jwt-secret-key-2026"),
   jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? "7d",
   pairingTokenTtlSeconds: Number(process.env.PAIRING_TOKEN_TTL_SECONDS ?? 300),

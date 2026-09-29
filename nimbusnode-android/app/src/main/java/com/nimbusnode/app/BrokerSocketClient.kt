@@ -29,7 +29,10 @@ class BrokerSocketClient(
     private val deviceId: String,
     private val deviceToken: String,
     private val fileVault: FileVault,
-    private val onStateChange: (State) -> Unit
+    private val onStateChange: (State) -> Unit,
+    private val onNodeRemoved: (reason: String) -> Unit = {},
+    private val onClientRemoved: (userId: String) -> Unit = {},
+    private val onClientPresence: (userId: String, online: Boolean) -> Unit = { _, _ -> }
 ) {
     enum class State { CONNECTING, ONLINE, OFFLINE }
 
@@ -122,18 +125,45 @@ class BrokerSocketClient(
             }
 
             when (msg.optString("type")) {
+                "client_unlinked" -> onClientRemoved(msg.optString("userId"))
+                "client_presence" -> onClientPresence(msg.optString("userId"), msg.optBoolean("online", false))
+                "node_unlinked" -> {
+                    val reason = msg.optString("reason").ifEmpty { "Node removed from web dashboard" }
+                    Log.w(TAG, "Broker notified node_unlinked: $reason")
+                    stopped = true
+                    socket?.close(1000, "node_unlinked")
+                    socket = null
+                    onStateChange(State.OFFLINE)
+                    onNodeRemoved(reason)
+                }
                 "fetch_request" -> handleFetchRequest(msg)
                 else -> Log.d(TAG, "Unhandled message type: ${msg.optString("type")}")
             }
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+            if (stopped) return
             Log.w(TAG, "Socket failure: ${t.message}")
+            if (response?.code == 401 || response?.code == 404) {
+                Log.w(TAG, "Socket rejected by broker (HTTP ${response.code}) — node unlinked or invalid token")
+                stopped = true
+                onStateChange(State.OFFLINE)
+                onNodeRemoved("Device token rejected (HTTP ${response.code})")
+                return
+            }
             onStateChange(State.OFFLINE)
             scheduleReconnect()
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+            if (stopped) return
+            if (code == 4004 || reason.contains("re-pair", ignoreCase = true) || reason.contains("unlinked", ignoreCase = true)) {
+                Log.w(TAG, "Device connection closed by broker (unlinked/deleted): $reason (code $code)")
+                stopped = true
+                onStateChange(State.OFFLINE)
+                onNodeRemoved(reason)
+                return
+            }
             onStateChange(State.OFFLINE)
             if (!stopped) scheduleReconnect()
         }

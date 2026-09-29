@@ -4,6 +4,13 @@ export interface SharedUser {
   userId: string;
   email: string;
   role: string;
+  scopeMode?: "ALL" | "CUSTOM_FOLDER" | "CUSTOM_FILE" | "NONE";
+  scopePath?: string | null;
+  scopeName?: string | null;
+  sharingEnabled?: boolean;
+  isLive?: boolean;
+  lastSeenAt?: string | null;
+  connectedAt?: string;
   since: string;
 }
 
@@ -19,6 +26,7 @@ export interface Device {
   lastSeenAt?: string | null;
   fileCount?: number;
   role?: string;
+  sharingEnabled?: boolean;
   sharedWith?: SharedUser[];
 }
 
@@ -44,7 +52,7 @@ export interface DownloadedFile {
 }
 
 export class ApiError extends Error {
-  constructor(message: string, public status?: number) {
+  constructor(message: string, public status?: number, public code?: string) {
     super(message);
     this.name = "ApiError";
   }
@@ -156,6 +164,14 @@ export class BrokerClient {
     if (!res.ok && res.status !== 204) await parseJsonOrThrow(res);
   }
 
+  async setPresence(online: boolean): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/devices/presence`, {
+      method: online ? "POST" : "DELETE",
+      headers: this.authHeaders(),
+    });
+    if (!res.ok && res.status !== 204) await parseJsonOrThrow(res);
+  }
+
   async listFiles(deviceId?: string): Promise<FileMeta[]> {
     const url = new URL(`${this.baseUrl}/files`);
     if (deviceId) url.searchParams.set("deviceId", deviceId);
@@ -169,7 +185,7 @@ export class BrokerClient {
     });
     if (!res.ok) {
       const json = await res.json().catch(() => ({}));
-      throw new ApiError(json.error ?? `Download failed (HTTP ${res.status})`, res.status);
+      throw new ApiError(json.error ?? `Download failed (HTTP ${res.status})`, res.status, json.code);
     }
     const wrappedDek = res.headers.get("X-Encrypted-Dek");
     if (!wrappedDek) {
