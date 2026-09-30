@@ -1,50 +1,68 @@
-# Node / web app
+# Node / Web / Broker dependencies
 node_modules/
+**/node_modules/
 .npm/
-.env
-.env.*
-!.env.example
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+pnpm-debug.log*
 
-# Build output and tool caches in any project
+# Environment & Secrets (Never commit credentials)
+.env
+**/.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.cert
+
+# Build outputs & caches
+dist/
 **/dist/
+build/
+**/build/
 .vite/
+**/.vite/
+*.tsbuildinfo
 **/*.tsbuildinfo
+out/
+**/out/
+tmp/
+**/tmp/
+**/generated/
 
-# Broker / Prisma
-nimbusnode-broker/storage/
+# Broker storage & runtime cache
+stashly-broker/storage/
+**/storage/
+**/storage/cache/
 
 # Android / Gradle
 .gradle/
-**/build/
+**/.gradle/
 **/captures/
 **/local.properties
-**/.idea/
 **/.externalNativeBuild/
 **/.cxx/
+**/*.apk
+**/*.aab
+**/*.keystore
+**/*.jks
 **/*.iml
-**/androidTest/**/build/
-**/test/**/build/
 
-# Kotlin/Java generated files
-**/generated/
-**/tmp/
-**/out/
+# IDE & Editor configs
+.idea/
+**/.idea/
+.vscode/
+**/.vscode/
+*.iws
+*.ipr
+*.swp
+*.swo
 
-# OS / editor files
+# OS files & logs
 .DS_Store
 Thumbs.db
 *.log
 
-# JetBrains
-.idea/
-*.iws
-*.ipr
-
-# VS Code
-.vscode/
-
-# Optional: keep lockfiles tracked
+# Lockfiles: keep tracked
 !package-lock.json
