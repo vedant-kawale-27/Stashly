@@ -184,4 +184,5 @@ npm run dev
 
 ## 📜 License
 
-MIT License. Developed for private, decentralized, zero-knowledge mobile cloud storage.
+GNU Affero General Public License v3.0 (AGPL-3.0). Copyright (C) 2026 Vedant Kawale.
+See [`LICENSE`](./LICENSE) for full legal terms.
