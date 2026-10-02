@@ -1,8 +1,8 @@
 # Stashly
 
 Stashly turns an Android phone into a remotely accessible, hardware-backed
-encrypted storage node. The web console and desktop client can browse and
-sync files without giving the broker a master key or plaintext file content.
+encrypted storage node. The web console can browse and retrieve files without
+giving the broker a master key or plaintext file content.
 
 ## Architecture
 
@@ -10,7 +10,6 @@ sync files without giving the broker a master key or plaintext file content.
 graph LR
   Android["Android storage node<br/>Kotlin + Keystore"] <-->|"WSS + encrypted payloads"| Broker["Broker<br/>Express + Prisma + PostgreSQL"]
   Web["Web console<br/>React + WebCrypto"] <-->|"HTTPS"| Broker
-  Desktop["Desktop sync client<br/>Node + TypeScript"] <-->|"HTTPS"| Broker
 ```
 
 The Android node encrypts each file with a random AES-256-GCM data encryption
@@ -25,7 +24,6 @@ The browser keeps configured master keys locally and decrypts only in memory.
 | [`stashly-android/`](./stashly-android) | Android storage node, foreground service, indexing, encryption, pairing, uploads, and Bluetooth key sharing |
 | [`stashly-broker/`](./stashly-broker) | REST/WebSocket relay, authentication, scopes, sharing, MFA, audit logging, cache, and PostgreSQL schema |
 | [`stashly-web/`](./stashly-web) | React dashboard, file browser, device management, offline encrypted cache, PWA assets, and settings |
-| [`stashly-desktop/`](./stashly-desktop) | TypeScript CLI that synchronizes broker ciphertext into a local directory |
 | [`docs/`](./docs) | Additional project documentation |
 
 ## Quick start
@@ -73,23 +71,6 @@ browser supports Web Bluetooth.
 
 The debug build permits local HTTP broker development. Release deployments
 should use HTTPS/WSS and a properly configured network security policy.
-
-### Desktop sync client
-
-```bash
-cd stashly-desktop
-npm install
-npm run build
-set STASHLY_BROKER_URL=http://localhost:4000
-set STASHLY_TOKEN=<web-session-jwt>
-set STASHLY_DEVICE_ID=<device-id>
-set STASHLY_SYNC_DIR=.\stashly-sync
-npm run sync
-```
-
-The client downloads encrypted broker payloads and maintains
-`.stashly-manifest.json` so unchanged files are skipped. It is intended for
-encrypted archival/sync workflows; it does not decrypt files.
 
 ## Security model
 
