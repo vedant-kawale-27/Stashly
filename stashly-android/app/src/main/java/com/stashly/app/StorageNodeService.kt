@@ -45,6 +45,7 @@ class StorageNodeService : Service() {
         val fileVault = FileVault(this, keyManager, storage)
 
         socketClient = BrokerSocketClient(
+            context = this,
             brokerBaseUrl = storage.brokerBaseUrl ?: "",
             deviceId = storage.deviceId ?: "",
             deviceToken = storage.deviceToken ?: "",
@@ -123,7 +124,7 @@ class StorageNodeService : Service() {
         if (::socketClient.isInitialized) {
             // stop() sets the client guard before closing, so this deliberate stop
             // cannot be reported as an offline network failure or reconnect.
-            socketClient.stop()
+            socketClient.stop(clearRemoteFiles = true)
         }
         stopForeground(STOP_FOREGROUND_REMOVE)
         getSystemService(NotificationManager::class.java).cancel(NOTIFICATION_ID)

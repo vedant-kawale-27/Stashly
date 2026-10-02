@@ -16,8 +16,8 @@ if (!databaseUrl?.startsWith("postgresql://") && !databaseUrl?.startsWith("postg
   throw new Error("DATABASE_URL must be a PostgreSQL URL starting with postgresql:// or postgres://");
 }
 
-function required(name: string, fallback?: string): string {
-  const val = process.env[name] ?? fallback;
+function required(name: string): string {
+  const val = process.env[name];
   if (val === undefined) {
     throw new Error(`Missing required env var: ${name}`);
   }
@@ -33,12 +33,20 @@ if (!fs.existsSync(storageDir)) {
   }
 }
 
+const jwtSecret = required("JWT_SECRET");
+if (jwtSecret.length < 32) {
+  throw new Error("JWT_SECRET must be at least 32 characters long");
+}
+
 export const config = {
   port: Number(process.env.PORT ?? 4000),
   nodeEnv,
-  jwtSecret: required("JWT_SECRET", "stashly-super-secure-jwt-secret-key-2026"),
+  publicUrl: process.env.PUBLIC_URL ? process.env.PUBLIC_URL.trim().replace(/\/+$/, "") : null,
+  jwtSecret,
   jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? "7d",
   pairingTokenTtlSeconds: Number(process.env.PAIRING_TOKEN_TTL_SECONDS ?? 300),
   deviceFetchTimeoutMs: Number(process.env.DEVICE_FETCH_TIMEOUT_MS ?? 15000),
+  rateLimitAuthMax: Number(process.env.RATE_LIMIT_AUTH_MAX ?? 25),
+  rateLimitPairMax: Number(process.env.RATE_LIMIT_PAIR_MAX ?? 40),
   storageDir,
 };

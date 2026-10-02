@@ -8,6 +8,8 @@
 
 import cors from "cors";
 import express from "express";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
 import http from "http";
 import { config } from "./config";
 import { authRouter } from "./routes/auth";
@@ -15,6 +17,7 @@ import { devicesRouter } from "./routes/devices";
 import { filesRouter } from "./routes/files";
 import { attachWebSocketServer } from "./ws/server";
 import { getLocalIpAddress } from "./utils/network";
+import { sharesRouter } from "./routes/shares";
 
 // Last-resort safety net: log and keep running rather than let one bad
 // promise rejection anywhere in the app take down every connected device.
@@ -23,8 +26,30 @@ process.on("unhandledRejection", (reason) => {
 });
 
 const app = express();
+
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: "cross-origin" },
+  crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
+}));
+
 app.use(cors({ exposedHeaders: ["X-Encrypted-Dek", "X-From-Local-Cache"] }));
-app.use(express.json({ limit: "10mb" }));
+app.use(express.json({ limit: "50mb" }));
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: config.rateLimitAuthMax,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many authentication attempts. Please try again later." },
+});
+
+const pairingLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: config.rateLimitPairMax,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many pairing attempts. Please try again later." },
+});
 
 app.get("/health", (_req, res) => res.json({ ok: true, status: "healthy", service: "stashly-broker" }));
 
@@ -35,7 +60,7 @@ app.get("/info", (req, res) => {
   const isPrivateHost = hostname === "localhost" || hostname === "127.0.0.1" ||
     hostname.startsWith("10.") || hostname.startsWith("192.168.") ||
     hostname.startsWith("172.");
-  const publicUrl = process.env.PUBLIC_URL || (!isPrivateHost ? `${protocol}://${host}` : null);
+  const publicUrl = config.publicUrl || (!isPrivateHost ? `${protocol}://${host}` : null);
   const isProd = config.nodeEnv === "production" || !!publicUrl;
   const localIp = getLocalIpAddress();
   const localLanUrl = `http://${localIp}:${config.port}`;
@@ -54,9 +79,13 @@ app.get("/info", (req, res) => {
   });
 });
 
-app.use("/auth", authRouter);
+app.use("/auth", authLimiter, authRouter);
+app.use("/devices/pairing-tokens", pairingLimiter);
+app.use("/devices/pair", pairingLimiter);
 app.use("/devices", devicesRouter);
 app.use("/files", filesRouter);
+app.use("/shares", sharesRouter);
+app.use("/share", sharesRouter);
 
 const httpServer = http.createServer(app);
 attachWebSocketServer(httpServer);

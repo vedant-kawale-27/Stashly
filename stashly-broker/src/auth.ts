@@ -15,6 +15,7 @@ export interface UserTokenPayload {
   userId: string;
   email: string;
 }
+export interface MfaChallengePayload { userId: string; email: string; purpose: "mfa"; }
 
 export interface DeviceTokenPayload {
   deviceId: string;
@@ -36,6 +37,14 @@ export function signUserToken(payload: UserTokenPayload): string {
 
 export function verifyUserToken(token: string): UserTokenPayload {
   return jwt.verify(token, config.jwtSecret) as UserTokenPayload;
+}
+export function signMfaChallenge(payload: Omit<MfaChallengePayload, "purpose">): string {
+  return jwt.sign({ ...payload, purpose: "mfa" }, config.jwtSecret, { expiresIn: "5m" });
+}
+export function verifyMfaChallenge(token: string): MfaChallengePayload {
+  const payload = jwt.verify(token, config.jwtSecret) as MfaChallengePayload;
+  if (payload.purpose !== "mfa") throw new Error("Invalid MFA challenge");
+  return payload;
 }
 
 // Device tokens are issued once a phone completes pairing and are used

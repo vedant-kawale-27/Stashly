@@ -12,9 +12,8 @@ import { verifyDeviceToken } from "../auth";
 import { deviceHub } from "./deviceHub";
 
 /**
- * Phones connect to: wss://<broker>/ws/device?token=<deviceJwt>
- * The device JWT is issued once, at the end of the pairing flow (see
- * routes/devices.ts), and stored locally on the phone from then on.
+ * Phones connect to: wss://<broker>/ws/device
+ * The device JWT is passed via Authorization header, Sec-WebSocket-Protocol, or query param.
  */
 export function attachWebSocketServer(httpServer: HttpServer) {
   const wss = new WebSocketServer({ noServer: true });
@@ -26,7 +25,12 @@ export function attachWebSocketServer(httpServer: HttpServer) {
       return;
     }
 
-    const token = url.searchParams.get("token");
+    const authHeader = req.headers.authorization;
+    const headerToken = authHeader?.startsWith("Bearer ") ? authHeader.slice(7).trim() : null;
+    const protoToken = req.headers["sec-websocket-protocol"]?.split(",")[0]?.trim();
+    const queryToken = url.searchParams.get("token")?.trim();
+    const token = headerToken || protoToken || queryToken;
+
     if (!token) {
       socket.destroy();
       return;

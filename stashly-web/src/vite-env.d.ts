@@ -15,3 +15,63 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
+
+// ── Web Bluetooth API Type Declarations ────────────────────────────────
+// These are experimental browser APIs (Chrome/Edge/Opera) and are not
+// included in TypeScript's default lib.dom.d.ts.
+
+interface BluetoothRequestDeviceFilter {
+  services?: BluetoothServiceUUID[];
+  name?: string;
+  namePrefix?: string;
+}
+
+type BluetoothServiceUUID = string | number;
+type BluetoothCharacteristicUUID = string | number;
+
+interface RequestDeviceOptions {
+  filters?: BluetoothRequestDeviceFilter[];
+  optionalServices?: BluetoothServiceUUID[];
+  acceptAllDevices?: boolean;
+}
+
+interface BluetoothRemoteGATTServer {
+  readonly connected: boolean;
+  readonly device: BluetoothDevice;
+  connect(): Promise<BluetoothRemoteGATTServer>;
+  disconnect(): void;
+  getPrimaryService(service: BluetoothServiceUUID): Promise<BluetoothRemoteGATTService>;
+}
+
+interface BluetoothRemoteGATTService {
+  readonly uuid: string;
+  getCharacteristic(characteristic: BluetoothCharacteristicUUID): Promise<BluetoothRemoteGATTCharacteristic>;
+}
+
+interface BluetoothRemoteGATTCharacteristic {
+  readonly uuid: string;
+  readonly value: DataView | null;
+  readValue(): Promise<DataView>;
+  writeValue(value: BufferSource): Promise<void>;
+  startNotifications(): Promise<BluetoothRemoteGATTCharacteristic>;
+  stopNotifications(): Promise<BluetoothRemoteGATTCharacteristic>;
+  addEventListener(type: string, listener: EventListenerOrEventListenerObject): void;
+  removeEventListener(type: string, listener: EventListenerOrEventListenerObject): void;
+}
+
+interface BluetoothDevice {
+  readonly id: string;
+  readonly name?: string;
+  readonly gatt?: BluetoothRemoteGATTServer;
+  addEventListener(type: string, listener: EventListenerOrEventListenerObject): void;
+  removeEventListener(type: string, listener: EventListenerOrEventListenerObject): void;
+}
+
+interface Bluetooth {
+  requestDevice(options: RequestDeviceOptions): Promise<BluetoothDevice>;
+  getAvailability(): Promise<boolean>;
+}
+
+interface Navigator {
+  readonly bluetooth?: Bluetooth;
+}

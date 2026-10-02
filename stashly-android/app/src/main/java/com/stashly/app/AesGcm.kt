@@ -34,6 +34,9 @@ object AesGcm {
     }
 
     fun decrypt(keyBytes: ByteArray, blob: ByteArray): ByteArray {
+        if (blob.size < IV_LEN + 16) {
+            throw IllegalArgumentException("Ciphertext is too short to contain IV and authentication tag")
+        }
         val iv = blob.copyOfRange(0, IV_LEN)
         val ciphertext = blob.copyOfRange(IV_LEN, blob.size)
         val cipher = Cipher.getInstance(ALGO)

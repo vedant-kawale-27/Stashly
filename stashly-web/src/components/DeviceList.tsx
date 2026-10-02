@@ -8,12 +8,20 @@
 
 import React, { useEffect, useState } from "react";
 import { BrokerClient, Device } from "../api";
+import { base64ToBytes } from "../crypto";
+import { BluetoothKeyModal } from "./BluetoothKeyModal";
 import { WindowsMountModal } from "./WindowsMountModal";
 
 function formatTimestamp(value?: string | null): string {
   if (!value) return "Never";
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? "Unknown" : date.toLocaleString();
+}
+
+function formatSize(valueMb?: number | null): string {
+  if (valueMb == null || valueMb < 0) return "Unavailable";
+  if (valueMb >= 1024) return `${(valueMb / 1024).toFixed(1)} GB`;
+  return `${valueMb} MB`;
 }
 
 function scopeLabel(user: NonNullable<Device["sharedWith"]>[number]): string {
@@ -33,6 +41,9 @@ interface Props {
   token: string;
   selectedDeviceId: string | null;
   onSelectDevice: (deviceId: string | null) => void;
+  masterKeys: Record<string, string>;
+  onMasterKeyChange: (deviceId: string, key: string) => void;
+  onClearLocalKeyData: () => Promise<void>;
 }
 
 export function DeviceList({
@@ -41,6 +52,9 @@ export function DeviceList({
   token,
   selectedDeviceId,
   onSelectDevice,
+  masterKeys,
+  onMasterKeyChange,
+  onClearLocalKeyData,
 }: Props) {
   const [devices, setDevices] = useState<Device[]>([]);
   const [loading, setLoading] = useState(true);
@@ -48,11 +62,20 @@ export function DeviceList({
   const [mountDevice, setMountDevice] = useState<Device | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [newName, setNewName] = useState("");
+  const [keyDrafts, setKeyDrafts] = useState<Record<string, string>>({});
+  const [visibleKeyId, setVisibleKeyId] = useState<string | null>(null);
+  const [keyMessage, setKeyMessage] = useState<Record<string, string>>({});
+  const [bluetoothDevice, setBluetoothDevice] = useState<Device | null>(null);
+  const [keyManagerDevice, setKeyManagerDevice] = useState<Device | null>(null);
 
-  async function loadDevices() {
+  async function loadDevices(force = false, syncFiles = false) {
     try {
       setError(null);
-      const list = await client.listDevices();
+      let list = await client.listDevices(force);
+      if (syncFiles) {
+        await Promise.all(list.filter((device) => device.status === "online").map((device) => client.syncDevice(device.id).catch(() => undefined)));
+        list = await client.listDevices(true);
+      }
       setDevices(list);
       if (!selectedDeviceId && list.length > 0) {
         onSelectDevice(list[0].id);
@@ -66,7 +89,8 @@ export function DeviceList({
 
   useEffect(() => {
     loadDevices();
-    const interval = setInterval(loadDevices, 6000);
+    void loadDevices(true);
+    const interval = setInterval(() => loadDevices(true), 6000);
     return () => clearInterval(interval);
   }, []);
 
@@ -75,7 +99,7 @@ export function DeviceList({
     try {
       await client.renameDevice(deviceId, newName.trim());
       setRenamingId(null);
-      await loadDevices();
+      await loadDevices(true);
     } catch (err: any) {
       alert("Failed to rename device: " + err.message);
     }
@@ -91,10 +115,27 @@ export function DeviceList({
       if (selectedDeviceId === device.id) {
         onSelectDevice(null);
       }
-      await loadDevices();
+      await loadDevices(true);
     } catch (err: any) {
       alert("Failed to remove device: " + err.message);
     }
+  }
+
+  function saveMasterKey(deviceId: string) {
+    const key = (keyDrafts[deviceId] ?? masterKeys[deviceId] ?? "").trim();
+    try {
+      if (base64ToBytes(key).length !== 32) throw new Error("The key must be a 32-byte Base64 AES-256 key.");
+      onMasterKeyChange(deviceId, key);
+      setKeyMessage((old) => ({ ...old, [deviceId]: "Key saved in this browser." }));
+    } catch (error: any) {
+      setKeyMessage((old) => ({ ...old, [deviceId]: error.message || "Invalid master key." }));
+    }
+  }
+
+  function clearMasterKey(deviceId: string) {
+    setKeyDrafts((old) => ({ ...old, [deviceId]: "" }));
+    onMasterKeyChange(deviceId, "");
+    setKeyMessage((old) => ({ ...old, [deviceId]: "Key removed from this browser." }));
   }
 
   return (
@@ -106,9 +147,12 @@ export function DeviceList({
             {devices.length} {devices.length === 1 ? "Node" : "Nodes"}
           </span>
         </div>
-        <button className="btn-icon" onClick={loadDevices} title="Refresh nodes">
+        <div style={{ display: "flex", gap: 8 }}>
+          <button className="btn-secondary btn-small" onClick={() => void onClearLocalKeyData()} title="Remove all keys saved in this browser">Clear local keys</button>
+          <button className="btn-icon" onClick={() => void loadDevices(true, true)} title="Refresh device status and files">
           🔄
-        </button>
+          </button>
+        </div>
       </div>
 
       <div className="panel-box-body">
@@ -192,6 +236,27 @@ export function DeviceList({
                     <span className="badge-e2e" style={{ background: isOnline ? "rgba(16, 185, 129, 0.15)" : "rgba(100, 116, 139, 0.15)", color: isOnline ? "#10b981" : "var(--text-muted)" }}>
                       ● {isOnline ? "Live Stream" : "Offline"}
                     </span>
+                  </div>
+
+                  <div className="device-card-section" onClick={(e) => e.stopPropagation()}>
+                    <div className="device-card-section-heading">
+                      <div>
+                        <span className="device-card-label">Master encryption key</span>
+                        <span className="device-card-help">Configured separately for this device</span>
+                      </div>
+                      <span className={masterKeys[d.id] ? "device-key-status ready" : "device-key-status"}>{masterKeys[d.id] ? "Configured" : "Not set"}</span>
+                    </div>
+                    <button className="btn-secondary device-manage-key-button" onClick={() => { setKeyManagerDevice(d); setKeyDrafts((old) => ({ ...old, [d.id]: masterKeys[d.id] ?? "" })); setVisibleKeyId(null); }}>
+                      Manage master encryption key
+                    </button>
+                    {keyMessage[d.id] && <div className="device-card-help device-key-message">{keyMessage[d.id]}</div>}
+                  </div>
+
+                  <div className="device-info-grid">
+                    <div><span>Model</span><strong>{d.modelName || d.name}</strong><small>{d.modelNumber || "Model number unavailable"}</small></div>
+                    <div><span>Android / OS</span><strong>{d.androidVersion || d.osVersion || "Unavailable"}</strong><small>{d.platform}</small></div>
+                    <div><span>Battery</span><strong>{typeof d.batteryLevel === "number" ? `${d.batteryLevel}%` : "Unavailable"}</strong><small>{isOnline ? "Live node report" : "Last reported value"}</small></div>
+                    <div><span>Storage</span><strong>{d.storageFreeMb != null && d.storageTotalMb != null ? `${formatSize(d.storageFreeMb)} free` : "Unavailable"}</strong><small>{d.storageTotalMb != null ? `${formatSize(d.storageTotalMb)} total` : "Awaiting node report"}</small></div>
                   </div>
 
                   {/* Each linked client keeps its own scope and sharing state. */}
@@ -279,6 +344,46 @@ export function DeviceList({
           brokerUrl={brokerUrl}
           token={token}
           onClose={() => setMountDevice(null)}
+        />
+      )}
+      {keyManagerDevice && (
+        <div className="modal-overlay-bg" onClick={() => setKeyManagerDevice(null)}>
+          <div className="modal-dialog-box device-key-modal" onClick={(event) => event.stopPropagation()}>
+            <button className="modal-close-button" onClick={() => setKeyManagerDevice(null)} aria-label="Close master key manager">×</button>
+            <span className="eyebrow">Device security</span>
+            <h2>Manage master encryption key</h2>
+            <p className="device-card-help">{keyManagerDevice.name}</p>
+            <label className="device-key-modal-label" htmlFor="device-master-key">Base64 AES-256 master key</label>
+            <div className="device-key-row">
+              <input
+                id="device-master-key"
+                type={visibleKeyId === keyManagerDevice.id ? "text" : "password"}
+                value={keyDrafts[keyManagerDevice.id] ?? masterKeys[keyManagerDevice.id] ?? ""}
+                onChange={(event) => setKeyDrafts((old) => ({ ...old, [keyManagerDevice.id]: event.target.value }))}
+                placeholder="Paste the key from Android"
+              />
+              <button className="btn-secondary btn-small" onClick={() => setVisibleKeyId(visibleKeyId === keyManagerDevice.id ? null : keyManagerDevice.id)}>{visibleKeyId === keyManagerDevice.id ? "Hide" : "Show"}</button>
+            </div>
+            <p className="device-card-help">The key is stored in this browser only and is never sent to the broker.</p>
+            <div className="device-key-modal-actions">
+              <button className="btn-secondary" onClick={() => setBluetoothDevice(keyManagerDevice)}>Receive via Bluetooth</button>
+              <button className="btn-primary" onClick={() => { saveMasterKey(keyManagerDevice.id); setKeyManagerDevice(null); }}>Save key</button>
+              {masterKeys[keyManagerDevice.id] && <button className="btn-secondary" onClick={() => clearMasterKey(keyManagerDevice.id)}>Clear key</button>}
+            </div>
+            {keyMessage[keyManagerDevice.id] && <div className="device-card-help device-key-message">{keyMessage[keyManagerDevice.id]}</div>}
+          </div>
+        </div>
+      )}
+      {bluetoothDevice && (
+        <BluetoothKeyModal
+          isOpen
+          onClose={() => setBluetoothDevice(null)}
+          onKeyReceived={(key) => {
+            onMasterKeyChange(bluetoothDevice.id, key);
+            setKeyDrafts((old) => ({ ...old, [bluetoothDevice.id]: key }));
+            setKeyMessage((old) => ({ ...old, [bluetoothDevice.id]: "Key received and saved for this device." }));
+            setBluetoothDevice(null);
+          }}
         />
       )}
     </div>

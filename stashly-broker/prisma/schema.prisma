@@ -17,17 +17,53 @@ model User {
   email        String   @unique
   passwordHash String
   createdAt    DateTime @default(now())
+  mfaEnabled   Boolean  @default(false)
+  mfaSecretCiphertext String?
 
   userDevices    UserDevice[]
   pairingTokens  PairingToken[]
+  shareLinks     ShareLink[]
+  auditEvents    AuditLog[] @relation("AuditActor")
+}
+
+model ShareLink {
+  id        String   @id @default(uuid())
+  ownerId   String
+  deviceId  String
+  fileId    String?
+  scopeMode String   @default("CUSTOM_FILE")
+  scopePath String?
+  tokenHash String   @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime @default(now())
+  lastAccessAt DateTime?
+  accessCount Int @default(0)
+  owner User @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  file FileEntry? @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  @@index([ownerId, revokedAt])
+  @@index([expiresAt])
+}
+
+model AuditLog {
+  id String @id @default(uuid())
+  actorUserId String?
+  action String
+  targetType String?
+  targetId String?
+  metadata Json?
+  ipAddress String?
+  createdAt DateTime @default(now())
+  actor User? @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  @@index([actorUserId, createdAt])
+  @@index([action, createdAt])
 }
 
 model Device {
   id             String      @id @default(uuid())
   name           String      // e.g. "Vedant's Pixel 8"
   platform       String      @default("android") // "android" | "windows" | "ios" | "linux"
-  osVersion      String?
-  appVersion     String?
   status         String      @default("offline") // "online" | "offline"
   lastSeenAt     DateTime?
   storageQuotaMb Int         @default(0) // how much local storage this device has offered
@@ -35,6 +71,7 @@ model Device {
 
   files       FileEntry[]
   userDevices UserDevice[]
+  shares ShareLink[]
 }
 
 model UserDevice {
@@ -71,11 +108,53 @@ model FileEntry {
   lastAccessAt  DateTime?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime?
 
   device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  versions      FileVersion[]
+  shares ShareLink[]
 
   @@unique([deviceId, path])
   @@index([deviceId])
+  @@index([deviceId, deletedAt])
+}
+
+model FileVersion {
+  id            String   @id @default(uuid())
+  fileId        String
+  deviceId      String
+  path          String
+  name          String
+  sizeBytes     Int
+  contentHash   String
+  mimeType      String?
+  encryptedDek  String
+  cacheKey      String?
+  createdAt     DateTime  @default(now())
+
+  file FileEntry @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  @@index([fileId, createdAt])
+  @@index([deviceId])
+}
+
+model UploadSession {
+  id            String   @id @default(uuid())
+  userId        String
+  deviceId      String
+  path          String
+  name          String
+  mimeType      String?
+  encryptedDek  String
+  totalBytes    Int
+  receivedBytes Int      @default(0)
+  chunkCount    Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  expiresAt     DateTime
+
+  @@index([userId, deviceId])
+  @@index([expiresAt])
 }
 
 model PairingToken {

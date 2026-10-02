@@ -59,7 +59,15 @@ object PairingRepository {
         brokerBaseUrl: String,
         pairingToken: String,
         deviceName: String,
-        existingDeviceId: String? = null
+        existingDeviceId: String? = null,
+        modelName: String? = null,
+        modelNumber: String? = null,
+        androidVersion: String? = null,
+        osVersion: String? = null,
+        appVersion: String? = null,
+        batteryLevel: Int? = null,
+        storageTotalMb: Int? = null,
+        storageFreeMb: Int? = null
     ): PairingResult {
         val body = JSONObject().apply {
             put("token", pairingToken)
@@ -67,6 +75,14 @@ object PairingRepository {
             if (!existingDeviceId.isNullOrEmpty()) {
                 put("deviceId", existingDeviceId)
             }
+            if (!modelName.isNullOrEmpty()) put("modelName", modelName)
+            if (!modelNumber.isNullOrEmpty()) put("modelNumber", modelNumber)
+            if (!androidVersion.isNullOrEmpty()) put("androidVersion", androidVersion)
+            if (!osVersion.isNullOrEmpty()) put("osVersion", osVersion)
+            if (!appVersion.isNullOrEmpty()) put("appVersion", appVersion)
+            if (batteryLevel != null) put("batteryLevel", batteryLevel)
+            if (storageTotalMb != null) put("storageTotalMb", storageTotalMb)
+            if (storageFreeMb != null) put("storageFreeMb", storageFreeMb)
         }.toString().toRequestBody(jsonMediaType)
 
         val request = Request.Builder()

@@ -1,0 +1,108 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web:
+    name: Web checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: stashly-web
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: stashly-web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run lint when configured
+        run: npm run lint --if-present
+
+      - name: Run tests when configured
+        run: npm run test --if-present
+
+      - name: Type-check and build web app
+        run: npm run build
+
+  broker:
+    name: Broker checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: stashly-broker
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: stashly-broker/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npm run prisma:generate
+
+      - name: Validate Prisma schema
+        run: npx prisma validate
+
+      - name: Run lint when configured
+        run: npm run lint --if-present
+
+      - name: Run tests when configured
+        run: npm run test --if-present
+
+      - name: Type-check and build broker
+        run: npm run build
+
+  android:
+    name: Android checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: stashly-android
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK components
+        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+
+      - name: Run Android lint, tests, and debug build
+        run: gradle --no-daemon --stacktrace lint test assembleDebug

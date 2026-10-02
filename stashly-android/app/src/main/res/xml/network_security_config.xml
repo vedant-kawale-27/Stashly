@@ -1,15 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!--
-  Allows plain http:// / ws:// traffic, which Android blocks by default on
-  modern targetSdk. This is only here so you can pair against a broker
-  running on your own machine over local Wi-Fi without setting up TLS first.
-
-  Before using this outside local testing: remove this file, remove the
-  android:networkSecurityConfig line in AndroidManifest.xml, and run the
-  broker behind HTTPS (e.g. a reverse proxy with a real certificate, or
-  something like Caddy/Let's Encrypt). Sending the pairing token and file
-  ciphertext over unencrypted HTTP on a real network is not safe.
--->
+<!-- Production builds do not permit cleartext traffic. The debug source set
+     provides a local-network-only configuration for development pairing. -->
 <network-security-config>
-    <base-config cleartextTrafficPermitted="true" />
+    <base-config cleartextTrafficPermitted="false" />
 </network-security-config>

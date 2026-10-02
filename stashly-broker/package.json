@@ -4,6 +4,7 @@
   "description": "Broker server for Stashly — relays file requests between clients and Android storage-node devices, with a metadata DB and optional cloud cache.",
   "main": "dist/index.js",
   "scripts": {
+    "predev": "prisma generate",
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "npm run prisma:deploy && npm run prisma:generate && node dist/index.js",
@@ -26,6 +27,8 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.21.0",
+    "express-rate-limit": "^8.7.0",
+    "helmet": "^8.3.0",
     "jsonwebtoken": "^9.0.2",
     "prisma": "^5.20.0",
     "typescript": "^5.6.2",

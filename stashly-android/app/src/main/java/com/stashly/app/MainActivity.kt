@@ -8,7 +8,10 @@
 
 package com.stashly.app
 
+import android.Manifest
 import android.annotation.SuppressLint
+import android.bluetooth.BluetoothManager
+import android.content.pm.PackageManager
 import android.app.AlertDialog
 import android.app.NotificationManager
 import android.content.BroadcastReceiver
@@ -59,6 +62,31 @@ class MainActivity : AppCompatActivity() {
     private var pendingScopeTargetUserId: String? = null
     private var pairingProgressDialog: AlertDialog? = null
     private var clientRemovedDialog: AlertDialog? = null
+    private var bleKeyShareServer: BleKeyShareServer? = null
+    private var bleShareDialog: AlertDialog? = null
+
+    private val blePermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val allGranted = permissions.values.all { it }
+        if (allGranted) {
+            checkBluetoothEnabledAndShare()
+        } else {
+            Toast.makeText(this, "Bluetooth permissions are required to share the key.", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private val bleEnableLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val adapter = (getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
+        if (adapter != null && adapter.isEnabled) {
+            startBluetoothKeyShare()
+        } else {
+            Toast.makeText(this, "Bluetooth was not enabled. Key share cancelled.", Toast.LENGTH_LONG).show()
+        }
+    }
 
     private val unlinkedReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -166,6 +194,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        try {
+            bleKeyShareServer?.stop()
+            bleKeyShareServer = null
+            bleShareDialog?.dismiss()
+            bleShareDialog = null
+        } catch (_: Exception) {}
         try {
             unregisterReceiver(unlinkedReceiver)
         } catch (_: Exception) {}
@@ -837,21 +871,11 @@ class MainActivity : AppCompatActivity() {
     private fun onSyncNowClicked() {
         if (!storage.isPaired) return
         Toast.makeText(this, getString(R.string.toast_syncing), Toast.LENGTH_SHORT).show()
-        CoroutineScope(Dispatchers.IO).launch {
-            try {
-                val keyManager = KeyManager(storage)
-                val vault = FileVault(this@MainActivity, keyManager, storage)
-                vault.scanAndSync()
-                withContext(Dispatchers.Main) {
-                    Toast.makeText(this@MainActivity, getString(R.string.toast_sync_success), Toast.LENGTH_SHORT).show()
-                    refreshNodeStatus()
-                }
-            } catch (e: Exception) {
-                withContext(Dispatchers.Main) {
-                    Toast.makeText(this@MainActivity, getString(R.string.toast_sync_error, e.message ?: ""), Toast.LENGTH_LONG).show()
-                }
-            }
-        }
+        startForegroundService(
+            Intent(this, StorageNodeService::class.java).setAction(StorageNodeService.ACTION_SYNC_NOW)
+        )
+        Toast.makeText(this, getString(R.string.toast_sync_success), Toast.LENGTH_SHORT).show()
+        refreshNodeStatus()
     }
 
     private fun onScanQrClicked() {
@@ -938,12 +962,21 @@ class MainActivity : AppCompatActivity() {
         val targetUrl = brokerUrl
         CoroutineScope(Dispatchers.Main).launch {
             try {
+                val deviceInfo = readDeviceInfo()
                 val result = withContext(Dispatchers.IO) {
                     PairingRepository.pair(
                         targetUrl,
                         pairingToken,
                         deviceName,
-                        existingDeviceId = storage.deviceId
+                        existingDeviceId = storage.deviceId,
+                        modelName = deviceInfo.modelName,
+                        modelNumber = deviceInfo.modelNumber,
+                        androidVersion = deviceInfo.androidVersion,
+                        osVersion = deviceInfo.osVersion,
+                        appVersion = deviceInfo.appVersion,
+                        batteryLevel = deviceInfo.batteryLevel,
+                        storageTotalMb = deviceInfo.storageTotalMb,
+                        storageFreeMb = deviceInfo.storageFreeMb
                     )
                 }
                 storage.brokerBaseUrl = targetUrl
@@ -983,6 +1016,35 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private data class DeviceInfo(
+        val modelName: String,
+        val modelNumber: String,
+        val androidVersion: String,
+        val osVersion: String,
+        val appVersion: String,
+        val batteryLevel: Int?,
+        val storageTotalMb: Int?,
+        val storageFreeMb: Int?
+    )
+
+    private fun readDeviceInfo(): DeviceInfo {
+        val stat = StatFs(Environment.getExternalStorageDirectory().path)
+        fun toMb(value: Long): Int? = (value / (1024L * 1024L)).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        val batteryManager = getSystemService(BATTERY_SERVICE) as android.os.BatteryManager
+        val battery = batteryManager.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)
+            .takeIf { it in 0..100 }
+        return DeviceInfo(
+            modelName = "${Build.MANUFACTURER} ${Build.MODEL}".trim(),
+            modelNumber = Build.DEVICE,
+            androidVersion = Build.VERSION.RELEASE ?: "Unknown",
+            osVersion = Build.VERSION.RELEASE ?: "Unknown",
+            appVersion = packageManager.getPackageInfo(packageName, 0).versionName ?: "Unknown",
+            batteryLevel = battery,
+            storageTotalMb = toMb(stat.totalBytes),
+            storageFreeMb = toMb(stat.availableBytes)
+        )
+    }
+
     @SuppressLint("BatteryLife")
     private fun requestIgnoreBatteryOptimizations() {
         val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
@@ -1009,16 +1071,198 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
+        val options = arrayOf(
+            "\uD83D\uDCCB  Copy to Clipboard",
+            "\uD83D\uDCF6  Share via Bluetooth",
+            "\uD83D\uDC41  View Key"
+        )
+
         AlertDialog.Builder(this)
             .setTitle(getString(R.string.dialog_master_key_title))
-            .setMessage(getString(R.string.dialog_master_key_msg, key))
-            .setNeutralButton(getString(R.string.dialog_btn_copy_key)) { _, _ ->
-                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                clipboard.setPrimaryClip(ClipData.newPlainText("Stashly master key", key))
-                Toast.makeText(this, getString(R.string.toast_master_key_copied), Toast.LENGTH_SHORT).show()
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> {
+                        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(ClipData.newPlainText("Stashly master key", key))
+                        Toast.makeText(this, getString(R.string.toast_master_key_copied), Toast.LENGTH_SHORT).show()
+                    }
+                    1 -> requestBluetoothPermissionsAndShare()
+                    2 -> {
+                        AlertDialog.Builder(this)
+                            .setTitle("Master Key")
+                            .setMessage(getString(R.string.dialog_master_key_msg, key))
+                            .setNeutralButton(getString(R.string.dialog_btn_copy_key)) { _, _ ->
+                                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                clipboard.setPrimaryClip(ClipData.newPlainText("Stashly master key", key))
+                                Toast.makeText(this, getString(R.string.toast_master_key_copied), Toast.LENGTH_SHORT).show()
+                            }
+                            .setPositiveButton(getString(R.string.dialog_btn_ok), null)
+                            .show()
+                    }
+                }
             }
-            .setPositiveButton(getString(R.string.dialog_btn_ok), null)
+            .setNegativeButton(getString(R.string.dialog_btn_cancel), null)
             .show()
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun requestBluetoothPermissionsAndShare() {
+        // Step 1: Check runtime permissions (Android 12+)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val needed = mutableListOf<String>()
+            if (checkSelfPermission(Manifest.permission.BLUETOOTH_ADVERTISE) != PackageManager.PERMISSION_GRANTED) {
+                needed.add(Manifest.permission.BLUETOOTH_ADVERTISE)
+            }
+            if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                needed.add(Manifest.permission.BLUETOOTH_CONNECT)
+            }
+            if (needed.isNotEmpty()) {
+                blePermissionLauncher.launch(needed.toTypedArray())
+                return
+            }
+        }
+        // Step 2: Check if Bluetooth is enabled
+        checkBluetoothEnabledAndShare()
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun checkBluetoothEnabledAndShare() {
+        val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+        val adapter = bluetoothManager?.adapter
+
+        if (adapter == null) {
+            Toast.makeText(this, "Bluetooth is not available on this device.", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        if (!adapter.isEnabled) {
+            // Show dialog prompting user to enable Bluetooth
+            AlertDialog.Builder(this)
+                .setTitle("Bluetooth Required")
+                .setMessage(
+                    "Bluetooth must be turned on to share your master key.\n\n" +
+                    "The web browser needs to discover this device via Bluetooth " +
+                    "to securely receive the encryption key."
+                )
+                .setPositiveButton("Turn On Bluetooth") { _, _ ->
+                    @Suppress("DEPRECATION")
+                    val enableBtIntent = Intent(android.bluetooth.BluetoothAdapter.ACTION_REQUEST_ENABLE)
+                    bleEnableLauncher.launch(enableBtIntent)
+                }
+                .setNegativeButton(getString(R.string.dialog_btn_cancel), null)
+                .show()
+            return
+        }
+
+        // Bluetooth is on, start sharing
+        startBluetoothKeyShare()
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startBluetoothKeyShare() {
+        val adapter = (getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
+        if (adapter == null) {
+            Toast.makeText(this, "Bluetooth is not available on this device.", Toast.LENGTH_LONG).show()
+            return
+        }
+        if (!adapter.isEnabled) {
+            // Bluetooth may have been disabled while the enable request was open.
+            // Re-open the confirmation flow instead of starting a dead share session.
+            checkBluetoothEnabledAndShare()
+            return
+        }
+
+        val key = storage.masterKeyBase64
+        if (key == null) {
+            Toast.makeText(this, getString(R.string.toast_no_key), Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        // Clean up any previous session
+        bleKeyShareServer?.stop()
+
+        bleKeyShareServer = BleKeyShareServer(
+            context = this,
+            masterKeyBase64 = key,
+            onPinGenerated = { pin ->
+                runOnUiThread {
+                    bleShareDialog?.dismiss()
+                    bleShareDialog = AlertDialog.Builder(this)
+                        .setTitle("Confirm Pairing PIN")
+                        .setMessage(
+                            "A web client has connected.\n\n" +
+                            "Verify this PIN matches the one shown in the browser:\n\n" +
+                            "       $pin\n\n" +
+                            "If the PINs match, the master key will be shared securely."
+                        )
+                        .setCancelable(false)
+                        .setNegativeButton("Cancel") { _, _ ->
+                            bleKeyShareServer?.stop()
+                            bleKeyShareServer = null
+                            Toast.makeText(this, "Bluetooth key share cancelled.", Toast.LENGTH_SHORT).show()
+                        }
+                        .create()
+                    bleShareDialog?.show()
+                }
+            },
+            onClientConnected = { clientName ->
+                runOnUiThread {
+                    bleShareDialog?.dismiss()
+                    bleShareDialog = AlertDialog.Builder(this)
+                        .setTitle("Client Connected")
+                        .setMessage("$clientName connected.\nPerforming secure key exchange...")
+                        .setCancelable(false)
+                        .create()
+                    bleShareDialog?.show()
+                }
+            },
+            onTransferComplete = {
+                runOnUiThread {
+                    bleShareDialog?.dismiss()
+                    bleShareDialog = null
+                    bleKeyShareServer?.stop()
+                    bleKeyShareServer = null
+                    AlertDialog.Builder(this)
+                        .setTitle("Key Shared Successfully")
+                        .setMessage(
+                            "Your master key has been securely transferred " +
+                            "to the connected web client via Bluetooth.\n\n" +
+                            "The web browser can now decrypt your vault files."
+                        )
+                        .setPositiveButton(getString(R.string.dialog_btn_ok), null)
+                        .show()
+                }
+            },
+            onError = { errorMsg ->
+                runOnUiThread {
+                    bleShareDialog?.dismiss()
+                    bleShareDialog = null
+                    bleKeyShareServer?.stop()
+                    bleKeyShareServer = null
+                    Toast.makeText(this, "Bluetooth error: $errorMsg", Toast.LENGTH_LONG).show()
+                }
+            }
+        )
+
+        bleKeyShareServer!!.start()
+
+        // Show waiting dialog
+        bleShareDialog = AlertDialog.Builder(this)
+            .setTitle("Waiting for Connection")
+            .setMessage(
+                "Your device is now advertising via Bluetooth.\n\n" +
+                "On the web dashboard, open the Master Key drawer " +
+                "and tap \"Bluetooth Transfer\", then select this device.\n\n" +
+                "The connection will timeout in 2 minutes."
+            )
+            .setCancelable(false)
+            .setNegativeButton("Cancel") { _, _ ->
+                bleKeyShareServer?.stop()
+                bleKeyShareServer = null
+                Toast.makeText(this, "Bluetooth key share cancelled.", Toast.LENGTH_SHORT).show()
+            }
+            .create()
+        bleShareDialog?.show()
     }
 
     private fun onResetNodeClicked() {
@@ -1066,4 +1310,3 @@ class MainActivity : AppCompatActivity() {
  * mobile device's orientation (portrait / sensor) rather than default landscape.
  */
 class PortraitCaptureActivity : CaptureActivity()
-

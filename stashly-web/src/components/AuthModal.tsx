@@ -24,11 +24,21 @@ export function AuthModal({ isOpen, initialMode = "login", client, onClose, onAu
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [mfaChallenge, setMfaChallenge] = useState<string | null>(null);
+  const [mfaCode, setMfaCode] = useState("");
 
   React.useEffect(() => {
     setMode(initialMode);
     setError(null);
   }, [initialMode, isOpen]);
+
+  async function verifyMfa(e: React.FormEvent) {
+    e.preventDefault();
+    setLoading(true); setError(null);
+    try { onAuthenticated(await client.verifyMfa(mfaChallenge!, mfaCode), email.trim()); onClose(); }
+    catch (err: any) { setError(err.message || "That code is not valid. Try again."); }
+    finally { setLoading(false); }
+  }
 
   if (!isOpen) return null;
 
@@ -57,8 +67,15 @@ export function AuthModal({ isOpen, initialMode = "login", client, onClose, onAu
       if (mode === "register") {
         token = await client.register(email.trim(), password);
       } else {
-        token = await client.login(email.trim(), password);
+        const result = await client.login(email.trim(), password);
+        if (!result.token && result.mfaRequired && result.challenge) {
+          setMfaChallenge(result.challenge);
+          return;
+        }
+        if (!result.token) throw new Error("Authentication failed");
+        token = result.token;
       }
+
       onAuthenticated(token, email.trim());
       onClose();
     } catch (err: any) {
@@ -66,91 +83,55 @@ export function AuthModal({ isOpen, initialMode = "login", client, onClose, onAu
     } finally {
       setLoading(false);
     }
+
   }
 
   return (
-    <div className="modal-overlay-bg" onClick={onClose}>
+    <div className="modal-overlay-bg" onClick={onClose} role="presentation">
       <div className="modal-dialog-box" onClick={(e) => e.stopPropagation()}>
-        <button
-          onClick={onClose}
-          style={{
-            position: "absolute",
-            top: 20,
-            right: 20,
-            background: "none",
-            color: "var(--text-muted)",
-            fontSize: "1.1rem"
-          }}
-          aria-label="Close"
-        >
-          ✕
-        </button>
+        <button className="modal-close-button" onClick={onClose} aria-label="Close dialog">×</button>
 
-        <div style={{ textAlign: "center", marginBottom: 20 }}>
-          <div className="brand-logo-disc" style={{ margin: "0 auto 12px", width: 44, height: 44 }}>
+        <div className="auth-heading">
+          <div className="brand-logo-disc auth-logo">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
               <rect width="14" height="20" x="5" y="2" rx="3"/>
               <path d="M12 18h.01"/>
             </svg>
           </div>
-          <h3 style={{ fontSize: "1.35rem", fontWeight: 800 }}>
-            {mode === "login" ? "Welcome back to Stashly" : "Create Stashly Account"}
-          </h3>
-          <p style={{ fontSize: "0.85rem", color: "var(--text-muted)", marginTop: 4 }}>
-            {mode === "login" ? "Access your encrypted mobile cloud vault" : "Start your zero-knowledge private mobile node network"}
-          </p>
+          <h3>{mode === "login" ? "Welcome back" : "Create your account"}</h3>
+          <p>{mode === "login" ? "Sign in to access your private vault." : "Set up your private phone storage vault."}</p>
         </div>
 
-        <div style={{ display: "flex", background: "var(--bg-card-subtle)", borderRadius: "var(--radius-full)", padding: 4, marginBottom: 20 }}>
+        <div className="auth-tabs" role="tablist" aria-label="Authentication mode">
           <button
             type="button"
-            style={{
-              flex: 1,
-              padding: "8px 16px",
-              fontSize: "0.88rem",
-              fontWeight: 700,
-              background: mode === "login" ? "var(--bg-card)" : "transparent",
-              color: mode === "login" ? "var(--text-main)" : "var(--text-muted)",
-              boxShadow: mode === "login" ? "var(--shadow-sm)" : "none"
-            }}
+            className={mode === "login" ? "auth-tab active" : "auth-tab"}
             onClick={() => { setMode("login"); setError(null); }}
+            role="tab"
+            aria-selected={mode === "login"}
           >
-            Sign In
+            Sign in
           </button>
           <button
             type="button"
-            style={{
-              flex: 1,
-              padding: "8px 16px",
-              fontSize: "0.88rem",
-              fontWeight: 700,
-              background: mode === "register" ? "var(--bg-card)" : "transparent",
-              color: mode === "register" ? "var(--text-main)" : "var(--text-muted)",
-              boxShadow: mode === "register" ? "var(--shadow-sm)" : "none"
-            }}
+            className={mode === "register" ? "auth-tab active" : "auth-tab"}
             onClick={() => { setMode("register"); setError(null); }}
+            role="tab"
+            aria-selected={mode === "register"}
           >
-            Register
+            Create account
           </button>
         </div>
 
-        {error && (
-          <div style={{
-            background: "rgba(239, 68, 68, 0.15)",
-            color: "#ef4444",
-            padding: "10px 14px",
-            borderRadius: "var(--radius-sm)",
-            fontSize: "0.85rem",
-            fontWeight: 600,
-            marginBottom: 16
-          }}>
-            {error}
-          </div>
-        )}
+        {error && <div className="auth-error" role="alert">{error}</div>}
 
-        <form onSubmit={handleSubmit}>
+        {mfaChallenge ? <form onSubmit={verifyMfa} className="auth-form">
+          <div className="auth-mfa-note">Two-step verification is enabled for this account.</div>
+          <div className="form-field-wrap"><label htmlFor="mfa-code">6-digit authenticator code</label><input id="mfa-code" inputMode="numeric" autoComplete="one-time-code" value={mfaCode} onChange={(e) => setMfaCode(e.target.value)} required /></div>
+          <button type="submit" className="btn-primary auth-submit" disabled={loading}>{loading ? "Checking code…" : "Verify and sign in"}</button>
+        </form> : <form onSubmit={handleSubmit}>
           <div className="form-field-wrap">
-            <label htmlFor="auth-email">Account Email</label>
+            <label htmlFor="auth-email">Email address</label>
             <input
               id="auth-email"
               type="email"
@@ -176,7 +157,7 @@ export function AuthModal({ isOpen, initialMode = "login", client, onClose, onAu
 
           {mode === "register" && (
             <div className="form-field-wrap">
-              <label htmlFor="auth-confirm-password">Confirm Password</label>
+              <label htmlFor="auth-confirm-password">Confirm password</label>
               <input
                 id="auth-confirm-password"
                 type="password"
@@ -190,15 +171,14 @@ export function AuthModal({ isOpen, initialMode = "login", client, onClose, onAu
 
           <button
             type="submit"
-            className="btn-primary"
-            style={{ width: "100%", marginTop: 8, padding: "12px 20px" }}
+            className="btn-primary auth-submit"
             disabled={loading}
           >
-            {loading ? "Connecting…" : mode === "login" ? "Sign In to Vault" : "Create Free Account"}
+            {loading ? "Please wait…" : mode === "login" ? "Sign in" : "Create account"}
           </button>
-        </form>
+        </form>}
 
-        <div style={{ marginTop: 18, textAlign: "center", fontSize: "0.85rem", color: "var(--text-muted)" }}>
+        <div className="auth-footer">
           {mode === "login" ? (
             <p>
               Don't have an account?{" "}

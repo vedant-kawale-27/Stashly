@@ -18,6 +18,24 @@ import { isDirectoryEntry, isPathAllowed } from "../access";
 
 export const devicesRouter = Router();
 
+devicesRouter.post("/:deviceId/sync", requireAuth, async (req: AuthedRequest, res) => {
+  const link = await prisma.userDevice.findUnique({
+    where: { userId_deviceId: { userId: req.user!.userId, deviceId: req.params.deviceId } },
+  });
+  if (!link) return res.status(404).json({ error: "Device not found" });
+
+  try {
+    await deviceHub.requestSync(req.params.deviceId);
+    return res.status(204).send();
+  } catch (error: any) {
+    const offline = error?.message === "DEVICE_OFFLINE";
+    return res.status(offline ? 503 : 504).json({
+      error: offline ? "The Android node is offline" : "The Android node did not finish syncing in time",
+      code: offline ? "DEVICE_OFFLINE" : "DEVICE_TIMEOUT",
+    });
+  }
+});
+
 devicesRouter.post("/presence", requireAuth, async (req: AuthedRequest, res) => {
   const links = await prisma.userDevice.findMany({
     where: { userId: req.user!.userId },
@@ -110,8 +128,14 @@ devicesRouter.post("/pair", async (req, res) => {
     deviceId: existingDeviceId,
     storageQuotaMb,
     platform = "android",
+    modelName,
+    modelNumber,
+    androidVersion,
     osVersion,
     appVersion,
+    batteryLevel,
+    storageTotalMb,
+    storageFreeMb,
   } = req.body ?? {};
 
   if (!token || (!deviceName && !existingDeviceId)) {
@@ -140,8 +164,6 @@ devicesRouter.post("/pair", async (req, res) => {
       data: {
         ...(deviceName ? { name: deviceName } : {}),
         platform: platform || device.platform,
-        osVersion: osVersion ?? device.osVersion,
-        appVersion: appVersion ?? device.appVersion,
         storageQuotaMb: storageQuotaMb ?? device.storageQuotaMb,
       },
     });
@@ -160,8 +182,6 @@ devicesRouter.post("/pair", async (req, res) => {
       data: {
         name: deviceName,
         platform: platform || "android",
-        osVersion: osVersion || null,
-        appVersion: appVersion || null,
         storageQuotaMb: storageQuotaMb ?? 0,
       },
     });
@@ -174,6 +194,19 @@ devicesRouter.post("/pair", async (req, res) => {
       },
     });
   }
+
+  // Device health and identity are session data. Seed the in-memory snapshot
+  // from pairing so the Devices page does not wait for the first WS heartbeat.
+  deviceHub.updateDeviceTelemetry(device.id, {
+    ...(typeof modelName === "string" ? { modelName } : {}),
+    ...(typeof modelNumber === "string" ? { modelNumber } : {}),
+    ...(typeof androidVersion === "string" ? { androidVersion } : {}),
+    ...(typeof osVersion === "string" ? { osVersion } : {}),
+    ...(typeof appVersion === "string" ? { appVersion } : {}),
+    ...(Number.isInteger(batteryLevel) ? { batteryLevel } : {}),
+    ...(Number.isInteger(storageTotalMb) ? { storageTotalMb } : {}),
+    ...(Number.isInteger(storageFreeMb) ? { storageFreeMb } : {}),
+  });
 
   await prisma.pairingToken.update({
     where: { token },
@@ -371,6 +404,7 @@ devicesRouter.get("/", requireAuth, async (req: AuthedRequest, res) => {
   const deviceSummaries = userDevices.map((ud) => {
     const d = ud.device;
     const isOnline = deviceHub.isOnline(d.id);
+    const liveInfo = deviceHub.getDeviceTelemetry(d.id);
     const accessibleFileCount = d.files.filter((file) =>
       !isDirectoryEntry(file) && isPathAllowed(file.path, ud)
     ).length;
@@ -392,8 +426,7 @@ devicesRouter.get("/", requireAuth, async (req: AuthedRequest, res) => {
       id: d.id,
       name: d.name,
       platform: d.platform,
-      osVersion: d.osVersion,
-      appVersion: d.appVersion,
+      ...liveInfo,
       status: isOnline ? "online" : "offline",
       lastSeenAt: d.lastSeenAt,
       storageQuotaMb: d.storageQuotaMb,
