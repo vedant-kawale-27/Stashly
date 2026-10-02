@@ -4,6 +4,10 @@ The Stashly Broker is an always-on relay, authentication, and metadata directory
 
 The broker operates on a zero-knowledge trust model: it manages access tokens, routes WebSocket data requests, stores encrypted file metadata, and caches ciphertexts on disk, but never possesses decryption keys or unencrypted file contents.
 
+Recent additions include device system information and live telemetry, file
+versions and upload sessions, expiring share links, encrypted TOTP MFA
+secrets, security audit logs, request rate limits, and hardened HTTP headers.
+
 ---
 
 ## Technical Specifications
@@ -49,6 +53,13 @@ The broker uses PostgreSQL with Prisma ORM (`prisma/schema.prisma`). The relatio
 5. **`PairingToken`**:
    - Short-lived, single-use 8-character pairing tokens generated for pairing handshakes.
    - Automatically invalidated upon redemption (`used: true`) or expiration (`expiresAt`).
+
+6. **`FileVersion` and `UploadSession`**:
+   - Preserve prior encrypted metadata and track encrypted uploads without
+     exposing plaintext to the broker.
+
+7. **`ShareLink` and `AuditLog`**:
+   - Store hashed, expiring/revocable file-share tokens and security events.
 
 ---
 
@@ -113,6 +124,22 @@ The real-time communication pipeline between the broker and mobile devices is ma
     - `X-Encrypted-Dek: <base64_wrapped_dek>`
     - `X-From-Local-Cache: true|false`
 
+### Sharing Routes (`/shares`)
+
+- **`POST /shares`** *(Requires User Auth)*: Create a time-limited share link
+  for an accessible file.
+- **`GET /shares`** *(Requires User Auth)*: List the current user's links.
+- **`DELETE /shares/:id`** *(Requires User Auth)*: Revoke a link.
+- **`GET /shares/:token`**: Resolve public share metadata.
+- **`GET /shares/:token/download`**: Relay the selected ciphertext with its
+  wrapped DEK while the link is valid.
+
+### Account Security Routes (`/auth`)
+
+The authentication router also supports password changes and authenticator
+MFA setup, confirmation, status, and disable operations. MFA verification uses
+six-digit TOTP codes; share and security operations are written to `AuditLog`.
+
 ---
 
 ## Access Control Engine (`src/access.ts`)
@@ -141,6 +168,10 @@ PAIRING_TOKEN_TTL_SECONDS=300
 DEVICE_FETCH_TIMEOUT_MS=15000
 STORAGE_DIR="./storage/cache"
 ```
+
+`RATE_LIMIT_AUTH_MAX` and `RATE_LIMIT_PAIR_MAX` control the authentication
+and pairing rate-limit windows. `PUBLIC_URL` may be set when generated share
+links must use a public hostname.
 
 ### Installation and Database Migration
 

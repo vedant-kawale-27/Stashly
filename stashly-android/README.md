@@ -60,6 +60,9 @@ The client exchanges structured JSON messages with the broker over the persisten
 | `node_unlinked` | Broker &rarr; Phone | `reason` | Notification that the node was removed from the web console; triggers local reset. |
 | `client_unlinked` | Broker &rarr; Phone | `userId` | Notification that a specific client was disconnected. |
 | `client_presence` | Broker &rarr; Phone | `userId`, `online` | Real-time status update of client activity on the web dashboard. |
+| `upload_request` | Broker &rarr; Phone | `requestId`, `path`, `dataBase64`, `encryptedDek` | Sends encrypted ciphertext to the node for storage. |
+| `upload_result` | Phone &rarr; Broker | `requestId`, `ok`, `error` | Acknowledges an encrypted upload. |
+| `sync_request` | Broker &rarr; Phone | `requestId` | Requests a fresh metadata synchronization. |
 
 ---
 
@@ -71,6 +74,18 @@ Stashly supports multi-client pairing where each connected user account can be a
 - **`CUSTOM_FOLDER`**: Restricts the client to browse and download only files located inside a specific directory subtree.
 - **`CUSTOM_FILE`**: Restricts the client to a single designated file.
 - **`NONE`**: Temporarily pauses sharing with that specific client without unpairing the device.
+
+The Android app also reports system information and live storage telemetry to
+the broker. Node settings persist locally, and the foreground service exposes
+an ongoing notification with a stop action and reconnect status.
+
+### Bluetooth master-key sharing
+
+`BleKeyShareServer.kt` exposes a short-lived, authenticated Bluetooth GATT
+session for transferring the device master key to a user-approved browser.
+The key remains in the Android app's protected storage and is never sent
+through the broker. Bluetooth support depends on the device, browser, and
+runtime permissions.
 
 ---
 
@@ -85,6 +100,12 @@ Stashly supports multi-client pairing where each connected user account can be a
 - `android.permission.MANAGE_EXTERNAL_STORAGE`: Full filesystem access for storage node indexing.
 - `android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`: Prompts user to disable OEM battery saver killing the background service.
 - `android.permission.CAMERA`: QR code scanner for pairing token exchange.
+- `android.permission.BLUETOOTH_ADVERTISE`: Advertise the optional Bluetooth
+  key-sharing service on supported Android versions.
+- `android.permission.BLUETOOTH_CONNECT`: Accept and manage Bluetooth key
+  sharing connections.
+- `android.permission.BLUETOOTH_SCAN`: Discover or manage nearby Bluetooth
+  devices when required by the platform.
 
 ---
 

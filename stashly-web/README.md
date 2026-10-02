@@ -4,6 +4,17 @@ Stashly Web is a single-page web application that provides complete cloud storag
 
 The web client operates entirely under a zero-trust model: encrypted ciphertexts downloaded from the broker are decrypted directly inside the user's browser memory using the W3C Web Crypto API. The broker never receives or holds the master key.
 
+## Current capabilities
+
+- QR and manual device pairing with device selection and live presence
+- File browsing, previews, downloads, uploads, and scoped access controls
+- Per-device master-key storage in local browser storage, with optional
+  Bluetooth transfer from the Android node on supported browsers
+- Encrypted IndexedDB offline downloads containing ciphertext and wrapped DEKs
+- Share-link creation/revocation, password changes, authenticator-app MFA,
+  browser notifications, dark mode, and local security-data clearing
+- Installable PWA assets and responsive desktop/mobile layouts
+
 ---
 
 ## Technical Specifications
@@ -76,6 +87,17 @@ The web client implements the exact cryptographic counterpart to the Android app
 ### 7. `WindowsMountModal.tsx`
 - Provides step-by-step PowerShell scripts and WebDAV connection instructions to mount the Android storage node as a Windows mapped network drive (`Z:`).
 
+### 8. Device, settings, and offline features
+- `DevicePicker.tsx` keeps file operations tied to an explicitly selected node.
+- `SettingsPage.tsx` manages passwords, TOTP MFA, notifications, and clearing
+  locally stored keys/ciphertext.
+- `BluetoothKeyModal.tsx` uses Web Bluetooth to receive a master key from the
+  Android node when the browser and device support the protocol.
+- `offlineCache.ts` stores broker ciphertext and wrapped DEKs in IndexedDB;
+  plaintext is produced only for an explicit preview or download.
+- `notifications.ts`, `public/manifest.webmanifest`, and `public/sw.js`
+  provide optional browser alerts and installable PWA support.
+
 ---
 
 ## API Client Architecture (`src/api.ts`)
@@ -105,3 +127,11 @@ npm run dev
 npm run build
 ```
 The compiled static assets will be output to the `dist/` directory, ready for deployment to any static web host or CDN (Vercel, Netlify, Cloudflare Pages, Nginx, or AWS S3).
+
+### Environment
+
+Create `.env` from `.env.example` when needed:
+
+```ini
+VITE_BROKER_URL=http://localhost:4000
+```
