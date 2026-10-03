@@ -33,6 +33,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.activity.viewModels
 import androidx.core.net.toUri
 import com.journeyapps.barcodescanner.CaptureActivity
 import com.journeyapps.barcodescanner.ScanContract
@@ -60,9 +61,8 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var storage: SecureStorage
-    private var pendingScopePairing: PairingResult? = null
-    private var pendingScopeIsPairing = true
-    private var pendingScopeTargetUserId: String? = null
+    private val mainViewModel: MainViewModel by viewModels()
+    private val bluetoothPairingCoordinator by lazy { BluetoothPairingCoordinator(this) }
     private var pairingProgressDialog: AlertDialog? = null
     private var clientRemovedDialog: AlertDialog? = null
     private var bleKeyShareServer: BleKeyShareServer? = null
@@ -116,20 +116,20 @@ class MainActivity : AppCompatActivity() {
 
     private val folderPickerLauncher = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) {
-            if (pendingScopePairing != null) handlePairingScopeFolder(uri)
-        } else if (pendingScopePairing != null) {
-            val pairing = pendingScopePairing
-            pendingScopePairing = null
+            if (mainViewModel.pendingScopePairing != null) handlePairingScopeFolder(uri)
+        } else if (mainViewModel.pendingScopePairing != null) {
+            val pairing = mainViewModel.pendingScopePairing
+            mainViewModel.pendingScopePairing = null
             if (pairing != null) showAccessScopeDialog(pairing)
         }
     }
 
     private val filePickerLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null && pendingScopePairing != null) {
+        if (uri != null && mainViewModel.pendingScopePairing != null) {
             handlePairingScopeFile(uri)
-        } else if (uri == null && pendingScopePairing != null) {
-            val pairing = pendingScopePairing
-            pendingScopePairing = null
+        } else if (uri == null && mainViewModel.pendingScopePairing != null) {
+            val pairing = mainViewModel.pendingScopePairing
+            mainViewModel.pendingScopePairing = null
             if (pairing != null) showAccessScopeDialog(pairing)
         }
     }
@@ -215,6 +215,7 @@ class MainActivity : AppCompatActivity() {
         try {
             bleKeyShareServer?.stop()
             bleKeyShareServer = null
+            bluetoothPairingCoordinator.stop()
             bleShareDialog?.dismiss()
             bleShareDialog = null
         } catch (_: Exception) {}
@@ -280,6 +281,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showPage(pageIndex: Int) {
+        mainViewModel.selectedPage = pageIndex
         binding.pageStorage.visibility = if (pageIndex == 0) View.VISIBLE else View.GONE
         binding.pageConnect.visibility = if (pageIndex == 1) View.VISIBLE else View.GONE
         binding.pageSettings.visibility = if (pageIndex == 2) View.VISIBLE else View.GONE
@@ -663,7 +665,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun handlePairingScopeFolder(uri: Uri) {
-        val pairing = pendingScopePairing ?: return
+        val pairing = mainViewModel.pendingScopePairing ?: return
         try {
             contentResolver.takePersistableUriPermission(
                 uri,
@@ -675,7 +677,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun handlePairingScopeFile(uri: Uri) {
-        val pairing = pendingScopePairing ?: return
+        val pairing = mainViewModel.pendingScopePairing ?: return
         try {
             contentResolver.takePersistableUriPermission(
                 uri,
@@ -691,7 +693,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showAccessScopeDialog(pairing: PairingResult) {
-        pendingScopeTargetUserId = pairing.userId
+        mainViewModel.pendingScopeTargetUserId = pairing.userId
         val optionLayout = android.widget.LinearLayout(this).apply {
             orientation = android.widget.LinearLayout.VERTICAL
             setPadding(32, 8, 32, 0)
@@ -721,8 +723,8 @@ class MainActivity : AppCompatActivity() {
             .setMessage(getString(R.string.dialog_access_scope_msg, pairing.userEmail ?: "this client"))
             .setView(optionLayout)
             .setNegativeButton(getString(R.string.dialog_btn_cancel)) { _, _ ->
-                pendingScopePairing = null
-                if (pendingScopeIsPairing) storage.nodeEnabled = false
+                mainViewModel.pendingScopePairing = null
+                if (mainViewModel.pendingScopeIsPairing) storage.nodeEnabled = false
             }
             .setCancelable(false)
             .create()
@@ -730,21 +732,21 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun beginFolderScopePicker(pairing: PairingResult) {
-        pendingScopePairing = pairing
+        mainViewModel.pendingScopePairing = pairing
         try {
             folderPickerLauncher.launch(null)
         } catch (e: Exception) {
-            pendingScopePairing = null
+            mainViewModel.pendingScopePairing = null
             Toast.makeText(this, getString(R.string.toast_folder_picker_error, e.message ?: ""), Toast.LENGTH_SHORT).show()
         }
     }
 
     private fun beginFileScopePicker(pairing: PairingResult) {
-        pendingScopePairing = pairing
+        mainViewModel.pendingScopePairing = pairing
         try {
             filePickerLauncher.launch(arrayOf("*/*"))
         } catch (e: Exception) {
-            pendingScopePairing = null
+            mainViewModel.pendingScopePairing = null
             Toast.makeText(this, getString(R.string.toast_folder_picker_error, e.message ?: ""), Toast.LENGTH_SHORT).show()
         }
     }
@@ -756,9 +758,9 @@ class MainActivity : AppCompatActivity() {
         }
         val brokerUrl = storage.brokerBaseUrl ?: return
         val deviceToken = pairing.deviceToken
-        val isPairing = pendingScopeIsPairing
-        val targetUserId = pendingScopeTargetUserId
-        pendingScopePairing = null
+        val isPairing = mainViewModel.pendingScopeIsPairing
+        val targetUserId = mainViewModel.pendingScopeTargetUserId
+        mainViewModel.pendingScopePairing = null
 
         CoroutineScope(Dispatchers.Main).launch {
             try {
@@ -783,8 +785,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun hasFullStorageAccess(): Boolean =
-        Build.VERSION.SDK_INT < Build.VERSION_CODES.R || Environment.isExternalStorageManager()
+    private fun hasFullStorageAccess(): Boolean = SystemPermissionCoordinator.hasFullStorageAccess()
 
     private fun withStorageAccess(action: () -> Unit) {
         if (hasFullStorageAccess()) action() else showStorageAccessRequired()
@@ -960,7 +961,7 @@ class MainActivity : AppCompatActivity() {
                 storage.nodeEnabled = false
                 pairingProgressDialog?.dismiss()
                 pairingProgressDialog = null
-                pendingScopeIsPairing = true
+                mainViewModel.pendingScopeIsPairing = true
                 showAccessScopeDialog(result)
             } catch (e: Exception) {
                 pairingProgressDialog?.dismiss()
@@ -1051,13 +1052,12 @@ class MainActivity : AppCompatActivity() {
     @SuppressLint("MissingPermission")
     private fun requestBluetoothPermissionsAndShare() {
         // Step 1: Check runtime permissions (Android 12+)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        if (SystemPermissionCoordinator.bluetoothPermissions().isNotEmpty()) {
             val needed = mutableListOf<String>()
-            if (checkSelfPermission(Manifest.permission.BLUETOOTH_ADVERTISE) != PackageManager.PERMISSION_GRANTED) {
-                needed.add(Manifest.permission.BLUETOOTH_ADVERTISE)
-            }
-            if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
-                needed.add(Manifest.permission.BLUETOOTH_CONNECT)
+            for (permission in SystemPermissionCoordinator.bluetoothPermissions()) {
+                if (checkSelfPermission(permission) != PackageManager.PERMISSION_GRANTED) {
+                    needed.add(permission)
+                }
             }
             if (needed.isNotEmpty()) {
                 blePermissionLauncher.launch(needed.toTypedArray())
@@ -1124,7 +1124,7 @@ class MainActivity : AppCompatActivity() {
         // Clean up any previous session
         bleKeyShareServer?.stop()
 
-        bleKeyShareServer = BleKeyShareServer(
+        bleKeyShareServer = bluetoothPairingCoordinator.createServer(
             context = this,
             masterKeyBase64 = key,
             onPinGenerated = { pin ->
