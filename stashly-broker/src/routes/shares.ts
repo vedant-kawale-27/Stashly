@@ -53,7 +53,7 @@ sharesRouter.get("/:token", async (req, res) => {
   const share = await resolve(req.params.token);
   if (!share) return res.status(404).json({ error: "Share link is invalid, expired, or revoked" });
   await prisma.shareLink.update({ where: { id: share.id }, data: { lastAccessAt: new Date(), accessCount: { increment: 1 } } });
-  res.json({ id: share.id, file: { id: share.file!.id, name: share.file!.name, path: share.file!.path, sizeBytes: share.file!.sizeBytes, mimeType: share.file!.mimeType, encryptedDek: share.file!.encryptedDek }, expiresAt: share.expiresAt });
+  res.json({ id: share.id, file: { id: share.file!.id, name: share.file!.name, path: share.file!.path, sizeBytes: share.file!.sizeBytes, mimeType: share.file!.mimeType }, expiresAt: share.expiresAt });
 });
 
 sharesRouter.get("/:token/download", async (req, res) => {
@@ -65,7 +65,6 @@ sharesRouter.get("/:token/download", async (req, res) => {
     const ciphertext = await deviceHub.requestFile(file.deviceId, file.path);
     await prisma.shareLink.update({ where: { id: share.id }, data: { lastAccessAt: new Date(), accessCount: { increment: 1 } } });
     res.setHeader("Content-Type", "application/octet-stream");
-    res.setHeader("X-Encrypted-Dek", file.encryptedDek);
     return res.send(ciphertext);
   } catch {
     return res.status(503).json({ error: "The storage node did not respond", code: "DEVICE_TIMEOUT" });

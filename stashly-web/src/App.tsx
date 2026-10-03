@@ -7,6 +7,7 @@ import { FileBrowser } from "./components/FileBrowser";
 import { LandingPage } from "./components/LandingPage";
 import { PairingPanel } from "./components/PairingPanel";
 import { SettingsPage } from "./components/SettingsPage";
+import { SharePage } from "./components/SharePage";
 import { clearFileListViewCache } from "./components/FileBrowser";
 import { clearOfflineDownloads } from "./offlineCache";
 
@@ -90,6 +91,10 @@ export default function App() {
     if ("caches" in window) await Promise.all((await window.caches.keys()).map((name) => window.caches.delete(name)));
   }
 
+  if (window.location.pathname.startsWith("/share/")) {
+    const shareToken = decodeURIComponent(window.location.pathname.slice("/share/".length).split("/")[0] ?? "");
+    return <SharePage brokerUrl={BROKER} token={shareToken} />;
+  }
   if (!token) return <><LandingPage theme={theme} onToggleTheme={() => setTheme((value) => value === "dark" ? "light" : "dark")} onOpenAuth={(mode = "login") => { setAuthMode(mode); setAuthOpen(true); }} /><AuthModal isOpen={authOpen} initialMode={authMode} client={client} onClose={() => setAuthOpen(false)} onAuthenticated={(newToken, newEmail) => { setToken(newToken); setEmail(newEmail); setAuthOpen(false); navigate("/files"); }} /></>;
 
   return <div className="app-shell">

@@ -8,7 +8,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { BrokerClient, Device, FileMeta } from "../api";
-import { decryptFile, decryptChunkedFile, encryptFile, unwrapDek, wrapDek } from "../crypto";
+import { bytesToBase64, decryptFile, decryptChunkedFile, encryptFile, unwrapDek, wrapDek } from "../crypto";
 import { getOfflineDownload, saveOfflineDownload } from "../offlineCache";
 
 interface Props {
@@ -370,9 +370,15 @@ export function FileBrowser({ client, deviceId, onSelectDevice, devices, masterK
   }
 
   async function handleShare(file: FileMeta) {
+    if (!masterKey.trim()) {
+      setError("Configure this device's master key before creating a share link.");
+      return;
+    }
     try {
+      const dek = await unwrapDek(masterKey.trim(), file.encryptedDek);
       const share = await client.createShare(file.id, file.deviceId);
-      await navigator.clipboard?.writeText(share.url);
+      const shareUrl = `${window.location.origin}/share/${encodeURIComponent(share.token)}#dek=${encodeURIComponent(bytesToBase64(dek))}`;
+      await navigator.clipboard?.writeText(shareUrl);
       setError(`Share link copied. It expires ${new Date(share.expiresAt).toLocaleString()}.`);
     } catch (err: any) {
       setError(err.message ?? "Could not create share link.");
