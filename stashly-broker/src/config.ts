@@ -9,6 +9,7 @@
 import "dotenv/config";
 import path from "path";
 import fs from "fs";
+import crypto from "crypto";
 
 const nodeEnv = (process.env.NODE_ENV ?? "development").toLowerCase();
 const databaseUrl = process.env.DATABASE_URL;
@@ -38,11 +39,18 @@ if (jwtSecret.length < 32) {
   throw new Error("JWT_SECRET must be at least 32 characters long");
 }
 
+const mfaEncryptionKey = process.env.MFA_ENCRYPTION_KEY?.trim();
+if (!mfaEncryptionKey) {
+  const generated = crypto.randomBytes(32).toString("base64url");
+  throw new Error(`MFA_ENCRYPTION_KEY is required. Persist this generated value before starting the broker: ${generated}`);
+}
+
 export const config = {
   port: Number(process.env.PORT ?? 4000),
   nodeEnv,
   publicUrl: process.env.PUBLIC_URL ? process.env.PUBLIC_URL.trim().replace(/\/+$/, "") : null,
   jwtSecret,
+  mfaEncryptionKey,
   jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? "7d",
   pairingTokenTtlSeconds: Number(process.env.PAIRING_TOKEN_TTL_SECONDS ?? 300),
   deviceFetchTimeoutMs: Number(process.env.DEVICE_FETCH_TIMEOUT_MS ?? 15000),

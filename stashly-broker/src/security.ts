@@ -2,17 +2,25 @@ import crypto from "crypto";
 import { config } from "./config";
 import { prisma } from "./db";
 
-const key = crypto.createHash("sha256").update(config.jwtSecret).digest();
+const MFA_CIPHERTEXT_VERSION = "v1";
+const key = crypto.createHash("sha256").update(config.mfaEncryptionKey, "utf8").digest();
 
 export function encryptSecret(value: string): string {
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
   const encrypted = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
-  return `${iv.toString("base64url")}.${cipher.getAuthTag().toString("base64url")}.${encrypted.toString("base64url")}`;
+  return `${MFA_CIPHERTEXT_VERSION}.${iv.toString("base64url")}.${cipher.getAuthTag().toString("base64url")}.${encrypted.toString("base64url")}`;
 }
 
 export function decryptSecret(value: string): string {
-  const [iv, tag, ciphertext] = value.split(".").map((part) => Buffer.from(part, "base64url"));
+  const [version, ivText, tagText, ciphertextText] = value.split(".");
+  if (version !== MFA_CIPHERTEXT_VERSION || !ivText || !tagText || !ciphertextText) {
+    throw new Error("Unsupported MFA secret encryption version");
+  }
+  const iv = Buffer.from(ivText, "base64url");
+  const tag = Buffer.from(tagText, "base64url");
+  const ciphertext = Buffer.from(ciphertextText, "base64url");
+  if (iv.length !== 12 || tag.length !== 16) throw new Error("Invalid MFA secret encryption envelope");
   const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
   decipher.setAuthTag(tag);
   return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8");
