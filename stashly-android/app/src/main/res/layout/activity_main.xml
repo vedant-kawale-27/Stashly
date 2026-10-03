@@ -630,114 +630,73 @@
                             android:textSize="12sp"
                             android:textStyle="bold" />
 
-                        <!-- Battery Optimization -->
-                        <LinearLayout
+                        <TextView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="4dp"
+                            android:text="Review the Android permissions Stashly needs for scanning, background sync, notifications, and secure sharing."
+                            android:textColor="@color/text_secondary_light"
+                            android:textSize="12sp" />
+
+                        <Button
+                            android:id="@+id/btnEditSystemPermissions"
+                            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="12dp"
-                            android:gravity="center_vertical"
-                            android:orientation="horizontal">
+                            android:text="Edit System Permissions"
+                            android:textColor="@color/primary"
+                            app:cornerRadius="22dp"
+                            app:strokeColor="@color/primary"
+                            app:strokeWidth="1dp" />
 
-                            <LinearLayout
-                                android:layout_width="0dp"
-                                android:layout_height="wrap_content"
-                                android:layout_weight="1"
-                                android:orientation="vertical">
+                    </LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
 
-                                <TextView
-                                    android:layout_width="wrap_content"
-                                    android:layout_height="wrap_content"
-                                    android:text="Battery Optimization"
-                                    android:textColor="@color/text_primary_light"
-                                    android:textSize="14sp"
-                                    android:textStyle="bold" />
+                <!-- Device Storage Management Card -->
+                <com.google.android.material.card.MaterialCardView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="16dp"
+                    app:cardBackgroundColor="@color/surface_light"
+                    app:cardCornerRadius="16dp"
+                    app:cardElevation="2dp"
+                    app:strokeColor="@color/border_light"
+                    app:strokeWidth="1dp">
 
-                                <TextView
-                                    android:id="@+id/batteryStatusText"
-                                    android:layout_width="wrap_content"
-                                    android:layout_height="wrap_content"
-                                    android:text="Status: Required for background sync"
-                                    android:textColor="@color/text_secondary_light"
-                                    android:textSize="12sp" />
-                            </LinearLayout>
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:padding="18dp">
 
-                            <Button
-                                android:id="@+id/btnBatteryPermission"
-                                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:text="Allow"
-                                android:textColor="@color/primary"
-                                app:cornerRadius="20dp"
-                                app:strokeColor="@color/primary"
-                                app:strokeWidth="1dp" />
-                        </LinearLayout>
-
-                        <View
-                            android:layout_width="match_parent"
-                            android:layout_height="1dp"
-                            android:layout_marginVertical="14dp"
-                            android:background="@color/border_light" />
-
-                        <!-- Storage Scope & Folder Access -->
                         <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="DEVICE STORAGE PERMISSION"
+                            android:text="CLIENT STORAGE ACCESS"
                             android:textColor="@color/primary"
                             android:textSize="12sp"
                             android:textStyle="bold" />
 
                         <TextView
-                            android:id="@+id/storageScopeStatusText"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="4dp"
-                            android:text="Device file access: Not granted"
-                            android:textColor="@color/text_primary_light"
-                            android:textSize="14sp"
-                            android:textStyle="bold" />
-
-                        <TextView
-                            android:id="@+id/storagePermissionStatusText"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="2dp"
-                            android:text="Allow device file access so each client can use its assigned files or folders."
+                            android:text="Choose which files or folders each connected client can access."
                             android:textColor="@color/text_secondary_light"
                             android:textSize="12sp" />
 
                         <Button
-                            android:id="@+id/btnStoragePermission"
+                            android:id="@+id/btnManageClientStorageAccess"
                             style="@style/Widget.MaterialComponents.Button.OutlinedButton"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="12dp"
-                            android:text="🌐 All Storage"
+                            android:text="Manage Client Access"
                             android:textColor="@color/primary"
-                            app:cornerRadius="20dp" />
-
-                        <View
-                            android:layout_width="match_parent"
-                            android:layout_height="1dp"
-                            android:layout_marginVertical="12dp"
-                            android:background="@color/border_light" />
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="14dp"
-                            android:text="ALL CONNECTED CLIENTS"
-                            android:textColor="@color/text_secondary_light"
-                            android:textSize="11sp"
-                            android:textStyle="bold" />
-
-                        <LinearLayout
-                            android:id="@+id/layoutClientAccessList"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="8dp"
-                            android:orientation="vertical" />
+                            app:cornerRadius="22dp"
+                            app:strokeColor="@color/primary"
+                            app:strokeWidth="1dp" />
 
                     </LinearLayout>
                 </com.google.android.material.card.MaterialCardView>
@@ -792,7 +751,57 @@
                             android:layout_marginTop="12dp"
                             android:text="🔑 Master Key Options"
                             android:textColor="@color/primary"
-                            app:cornerRadius="24dp" />
+                            app:cornerRadius="24dp"
+                            app:strokeColor="@color/primary"
+                            app:strokeWidth="1dp" />
+
+                    </LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
+
+                <!-- Recycle Bin Card -->
+                <com.google.android.material.card.MaterialCardView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="16dp"
+                    app:cardBackgroundColor="@color/surface_light"
+                    app:cardCornerRadius="16dp"
+                    app:cardElevation="2dp"
+                    app:strokeColor="@color/border_light"
+                    app:strokeWidth="1dp">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:padding="18dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="RECYCLE BIN"
+                            android:textColor="@color/primary"
+                            android:textSize="12sp"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="4dp"
+                            android:text="Restore deleted files or permanently remove them from this device."
+                            android:textColor="@color/text_secondary_light"
+                            android:textSize="12sp" />
+
+                        <Button
+                            android:id="@+id/btnRecycleBinCard"
+                            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="12dp"
+                            android:text="Open Recycle Bin"
+                            android:textColor="@color/primary"
+                            app:cornerRadius="24dp"
+                            app:strokeColor="@color/primary"
+                            app:strokeWidth="1dp" />
 
                     </LinearLayout>
                 </com.google.android.material.card.MaterialCardView>

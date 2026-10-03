@@ -31,11 +31,11 @@
          not silently — see MainActivity. -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
-    <application
+        <application
         android:allowBackup="false"
         android:label="Stashly Node"
         android:theme="@style/Theme.Stashly"
-        android:icon="@android:drawable/sym_def_app_icon">
+        android:icon="@drawable/stashly_icon">
 
         <activity
             android:name=".MainActivity"
@@ -46,6 +46,21 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".RecycleBinActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Stashly" />
+
+        <activity
+            android:name=".SystemPermissionsActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Stashly" />
+
+        <activity
+            android:name=".ClientStorageAccessActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Stashly" />
 
         <!-- Custom QR Camera Scanner that respects device orientation -->
         <activity
@@ -66,6 +81,19 @@
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name=".StashlyWidgetProvider"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="com.stashly.app.widget.TOGGLE_NODE" />
+                <action android:name="com.stashly.app.widget.SYNC_NOW" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/stashly_widget_info" />
         </receiver>
 
     </application>

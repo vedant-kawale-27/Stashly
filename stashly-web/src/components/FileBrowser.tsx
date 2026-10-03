@@ -6,11 +6,10 @@
  * License, or (at your option) any later version.
  */
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { BrokerClient, Device, FileMeta } from "../api";
-import { decryptFile, encryptFile, unwrapDek, wrapDek } from "../crypto";
+import { decryptFile, decryptChunkedFile, encryptFile, unwrapDek, wrapDek } from "../crypto";
 import { getOfflineDownload, saveOfflineDownload } from "../offlineCache";
-import { notify } from "../notifications";
 
 interface Props {
   client: BrokerClient;
@@ -62,8 +61,70 @@ function isPreviewable(name: string, mimeType: string | null): boolean {
   );
 }
 
+function isImageFile(file: FileMeta): boolean {
+  if (file.mimeType?.startsWith("image/")) return true;
+  return /\.(png|jpe?g|gif|webp|svg|bmp|heic|avif)$/i.test(file.name);
+}
+
 function isDirectoryEntry(file: FileMeta): boolean {
   return file.mimeType === "inode/directory" || file.mimeType === "directory" || file.contentHash === "directory";
+}
+
+// In-memory cache of resolved thumbnail URLs (avoids re-fetching within same session)
+const thumbUrlCache = new Map<string, string>();
+
+function ThumbnailIcon({ file, client, masterKey }: { file: FileMeta; client: BrokerClient; masterKey: string }) {
+  const [thumbUrl, setThumbUrl] = useState<string | null>(() =>
+    file.deviceOnline ? (thumbUrlCache.get(file.id) ?? null) : null
+  );
+  const [tried, setTried] = useState(false);
+
+  useEffect(() => {
+    // Only show thumbnails when device is online — matches the requirement
+    // that files become inaccessible when Android stops sharing
+    if (!file.deviceOnline || !file.hasThumbnail || tried || thumbUrl) return;
+    let cancelled = false;
+    setTried(true);
+
+    (async () => {
+      // Keep only an in-memory object URL. Persisting decrypted thumbnails
+      // would keep file content visible after the node stops sharing.
+      const result = await client.downloadThumbnail(file.id);
+      if (!result || cancelled) return;
+
+      try {
+        const dek = await unwrapDek(masterKey.trim(), result.wrappedDek);
+        const plaintext = await decryptFile(dek, result.ciphertext);
+        const url = URL.createObjectURL(new Blob([plaintext], { type: file.mimeType ?? "image/jpeg" }));
+        if (!cancelled) {
+          thumbUrlCache.set(file.id, url);
+          setThumbUrl(url);
+        }
+      } catch {
+        // Decryption failed — show fallback icon
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [file.id, file.contentHash, file.hasThumbnail, file.deviceOnline]);
+
+  // Only render thumbnail when device is online
+  if (thumbUrl && file.deviceOnline) {
+    return (
+      <img
+        src={thumbUrl}
+        alt=""
+        style={{
+          width: 32,
+          height: 32,
+          objectFit: "cover",
+          borderRadius: 4,
+          flexShrink: 0,
+        }}
+      />
+    );
+  }
+  return <span>{getFileIcon(file.name, file.mimeType)}</span>;
 }
 
 function pathSegments(path: string): string[] {
@@ -101,15 +162,21 @@ function sameFileMeta(left: FileMeta, right: FileMeta): boolean {
     left.isCached === right.isCached &&
     left.cachedAt === right.cachedAt &&
     left.lastAccessAt === right.lastAccessAt &&
-    left.deletedAt === right.deletedAt;
+    left.deletedAt === right.deletedAt &&
+    left.hasThumbnail === right.hasThumbnail &&
+    left.encryptionFormat === right.encryptionFormat;
 }
 
 function reconcileFiles(previous: FileMeta[], next: FileMeta[]): FileMeta[] {
   const previousById = new Map(previous.map((file) => [file.id, file]));
-  return next.map((file) => {
+  const reconciled = next.map((file) => {
     const existing = previousById.get(file.id);
     return existing && sameFileMeta(existing, file) ? existing : file;
   });
+  if (reconciled.length === previous.length && reconciled.every((file, index) => file === previous[index])) {
+    return previous;
+  }
+  return reconciled;
 }
 
 export function FileBrowser({ client, deviceId, onSelectDevice, devices, masterKey }: Props) {
@@ -123,9 +190,14 @@ export function FileBrowser({ client, deviceId, onSelectDevice, devices, masterK
   const [currentPath, setCurrentPath] = useState("");
   const [uploadDestination, setUploadDestination] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  const [preview, setPreview] = useState<{ file: FileMeta; url: string | null; status: string; error: string | null } | null>(null);
+  const previewRequestRef = useRef(0);
+  const refreshInFlightRef = useRef(false);
   const uploadInputRef = useRef<HTMLInputElement>(null);
 
   async function refresh(force = false, requestDeviceSync = false) {
+    if (refreshInFlightRef.current) return;
+    refreshInFlightRef.current = true;
     setLoading(true);
     try {
       if (requestDeviceSync && deviceId) {
@@ -154,6 +226,7 @@ export function FileBrowser({ client, deviceId, onSelectDevice, devices, masterK
       setError(err.message ?? "Failed to query vault files");
     } finally {
       setLoading(false);
+      refreshInFlightRef.current = false;
     }
   }
 
@@ -164,7 +237,7 @@ export function FileBrowser({ client, deviceId, onSelectDevice, devices, masterK
     setTrashFiles(trashListViewCache.get(fileCacheKey(deviceId)) ?? []);
     setError(null);
     void refresh(false);
-    const interval = window.setInterval(() => void refresh(false), 8_000);
+    const interval = window.setInterval(() => void refresh(true), 8_000);
     return () => window.clearInterval(interval);
   }, [deviceId]);
 
@@ -175,9 +248,8 @@ export function FileBrowser({ client, deviceId, onSelectDevice, devices, masterK
   async function fetchAndDecrypt(file: FileMeta): Promise<Blob> {
     let downloaded;
     try {
-      downloaded = await client.downloadFile(file.id);
+      downloaded = await client.downloadFile(file.id, file.encryptionFormat);
       await saveOfflineDownload(file, downloaded.ciphertext, downloaded.wrappedDek).catch(() => undefined);
-      if (!downloaded.fromCache) notify("Stashly download cached", `${file.name} is available while offline.`);
     } catch (networkError) {
       const cached = await getOfflineDownload(file.id);
       if (!cached) throw networkError;
@@ -185,8 +257,20 @@ export function FileBrowser({ client, deviceId, onSelectDevice, devices, masterK
     }
     const { ciphertext, wrappedDek } = downloaded;
     const dek = await unwrapDek(masterKey.trim(), wrappedDek);
-    const plaintext = await decryptFile(dek, ciphertext);
+    const plaintext = file.encryptionFormat === "chunked"
+      ? await decryptChunkedFile(dek, ciphertext)
+      : await decryptFile(dek, ciphertext);
     return new Blob([plaintext], { type: file.mimeType ?? "application/octet-stream" });
+  }
+
+  async function fetchAndDecryptThumbnail(file: FileMeta): Promise<Blob> {
+    const downloaded = await client.downloadThumbnail(file.id);
+    if (!downloaded) {
+      throw new Error("Preview thumbnail is unavailable while the Android node is offline.");
+    }
+    const dek = await unwrapDek(masterKey.trim(), downloaded.wrappedDek);
+    const plaintext = await decryptFile(dek, downloaded.ciphertext);
+    return new Blob([plaintext], { type: file.mimeType ?? "image/jpeg" });
   }
 
   async function handleDelete(file: FileMeta) {
@@ -303,6 +387,30 @@ export function FileBrowser({ client, deviceId, onSelectDevice, devices, masterK
     setBusyFileId(file.id);
     setError(null);
     try {
+      // For chunked files, try streaming download to avoid full buffering
+      if (file.encryptionFormat === "chunked" && "showSaveFilePicker" in window) {
+        try {
+          const handle = await (window as any).showSaveFilePicker({ suggestedName: file.name });
+          const writable = await handle.createWritable();
+          let dek: Uint8Array | null = null;
+          const { wrappedDek } = await client.streamDownloadChunked(file.id, async (encChunk) => {
+            if (!dek) dek = await unwrapDek(masterKey.trim(), wrappedDek);
+            const plaintext = await decryptFile(dek, encChunk.buffer as ArrayBuffer);
+            await writable.write(new Uint8Array(plaintext));
+          });
+          await writable.close();
+          setBusyFileId(null);
+          return;
+        } catch (fsErr: any) {
+          if (fsErr?.name === "AbortError") {
+            setBusyFileId(null);
+            return;
+          }
+          // Fall through to buffered download on other errors
+        }
+      }
+
+      // Buffered download (legacy files, preview, or unsupported browser)
       const blob = await fetchAndDecrypt(file);
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -328,18 +436,84 @@ export function FileBrowser({ client, deviceId, onSelectDevice, devices, masterK
     }
     setBusyFileId(file.id);
     setError(null);
+
+    // Open synchronously so the browser does not block the preview window while
+    // the thumbnail and encrypted chunks are being fetched.
+    const canProgressivelyPreview = isImageFile(file) &&
+      file.encryptionFormat === "chunked" &&
+      file.hasThumbnail &&
+      file.deviceOnline;
+    const requestId = ++previewRequestRef.current;
+    setPreview({ file, url: null, status: "Loading preview...", error: null });
+    if (canProgressivelyPreview) {
+      let currentUrl: string | null = null;
+      let thumbnailUrl: string | null = null;
+
+      try {
+        thumbnailUrl = URL.createObjectURL(await fetchAndDecryptThumbnail(file));
+        currentUrl = thumbnailUrl;
+        setPreview((current) => requestId === previewRequestRef.current && current?.file.id === file.id
+          ? { ...current, url: thumbnailUrl, status: "Loading full resolution..." }
+          : current);
+
+        const plaintextParts: BlobPart[] = [];
+        let dek: Uint8Array | null = null;
+        const result = await client.streamDownloadChunked(file.id, async (encryptedChunk, _index, wrappedDek) => {
+          if (!dek) dek = await unwrapDek(masterKey.trim(), wrappedDek);
+          const plaintext = await decryptFile(dek, encryptedChunk.buffer as ArrayBuffer);
+          plaintextParts.push(plaintext);
+
+          // Rebuild the Blob after each authenticated chunk. Formats that can
+          // decode partial image data (especially progressive JPEG) improve in
+          // place; other formats still keep the instant thumbnail visible.
+          const nextUrl = URL.createObjectURL(new Blob(plaintextParts, {
+            type: file.mimeType ?? "image/jpeg",
+          }));
+          setPreview((current) => requestId === previewRequestRef.current && current?.file.id === file.id
+            ? { ...current, url: nextUrl, status: "Loading full resolution..." }
+            : current);
+          const previousUrl = currentUrl;
+          currentUrl = nextUrl;
+          if (previousUrl && previousUrl !== thumbnailUrl) {
+            window.setTimeout(() => URL.revokeObjectURL(previousUrl), 30_000);
+          }
+        });
+
+        setPreview((current) => requestId === previewRequestRef.current && current?.file.id === file.id
+          ? { ...current, status: `Full resolution (${result.chunkCount} chunks)` }
+          : current);
+        window.setTimeout(() => {
+          if (thumbnailUrl) URL.revokeObjectURL(thumbnailUrl);
+          if (currentUrl && currentUrl !== thumbnailUrl) URL.revokeObjectURL(currentUrl);
+        }, 10 * 60 * 1000);
+      } catch (err: any) {
+        setPreview((current) => requestId === previewRequestRef.current && current?.file.id === file.id
+          ? { ...current, status: "Preview failed", error: err.message ?? "Preview failed" }
+          : current);
+      } finally {
+        setBusyFileId(null);
+      }
+      return;
+    }
+
     try {
       const blob = await fetchAndDecrypt(file);
       const url = URL.createObjectURL(blob);
-      window.open(url, "_blank");
-      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      setPreview({ file, url, status: "Ready", error: null });
     } catch (err: any) {
+      setPreview({ file, url: null, status: "Preview failed", error: err.message ?? "Decryption preview failed" });
       setError(err.code === "DEVICE_OFFLINE_NO_CACHE" || err.code === "DEVICE_TIMEOUT_NO_CACHE"
         ? `${err.message}. Check that the phone is connected to the same broker URL as this web session.`
         : err.message ?? "Decryption preview failed — verify Master Key.");
     } finally {
       setBusyFileId(null);
     }
+  }
+
+  function closePreview() {
+    previewRequestRef.current += 1;
+    if (preview?.url) URL.revokeObjectURL(preview.url);
+    setPreview(null);
   }
 
   async function handleUpload(event: React.ChangeEvent<HTMLInputElement>) {
@@ -423,6 +597,36 @@ export function FileBrowser({ client, deviceId, onSelectDevice, devices, masterK
 
   return (
     <div className="panel-box">
+      {preview && (
+        <div className="preview-modal-overlay" role="dialog" aria-modal="true" aria-label={`Preview ${preview.file.name}`}>
+          <div className="preview-modal-dialog">
+            <button className="preview-modal-close" type="button" onClick={closePreview} aria-label="Close preview">×</button>
+            <div className="preview-modal-content">
+              {preview.url && isImageFile(preview.file) && (
+                <img className="preview-modal-media" src={preview.url} alt={preview.file.name} />
+              )}
+              {preview.url && preview.file.mimeType?.startsWith("video/") && (
+                <video className="preview-modal-media" src={preview.url} controls autoPlay />
+              )}
+              {preview.url && preview.file.mimeType?.startsWith("audio/") && (
+                <audio className="preview-modal-audio" src={preview.url} controls autoPlay />
+              )}
+              {preview.url && !isImageFile(preview.file) &&
+                !preview.file.mimeType?.startsWith("video/") &&
+                !preview.file.mimeType?.startsWith("audio/") && (
+                <iframe className="preview-modal-frame" src={preview.url} title={preview.file.name} />
+              )}
+              {!preview.url && !preview.error && <div className="preview-modal-loading">Loading preview...</div>}
+            </div>
+            <div className="preview-modal-footer">
+              <strong>{preview.file.name}</strong>
+              <span className={preview.error ? "preview-modal-error" : "preview-modal-status"}>
+                {preview.error ?? preview.status}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="panel-box-header">
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <h3 className="panel-box-title">
@@ -435,7 +639,7 @@ export function FileBrowser({ client, deviceId, onSelectDevice, devices, masterK
           {/* View Toggle */}
           <button
             className={`btn-small ${viewMode === "trash" ? "btn-primary" : "btn-secondary"}`}
-            style={{ display: "flex", alignItems: "center", gap: 6, marginLeft: 6 }}
+            style={{ display: "none" }}
             onClick={() => setViewMode((mode) => (mode === "files" ? "trash" : "files"))}
             title={viewMode === "files" ? "Open Android Recycle Bin" : "Back to active files"}
           >
@@ -564,6 +768,23 @@ export function FileBrowser({ client, deviceId, onSelectDevice, devices, masterK
             <span>▣</span>
             All linked devices
           </button>
+          <button
+            className={`file-device-all-button${viewMode === "trash" ? " selected" : ""}`}
+            type="button"
+            onClick={() => setViewMode("trash")}
+          >
+            <span>Recycle Bin</span>
+            {trashFiles.length > 0 && <strong style={{ marginLeft: "auto" }}>{trashFiles.length}</strong>}
+          </button>
+          {viewMode === "trash" && (
+            <button
+              className="file-device-all-button"
+              type="button"
+              onClick={() => setViewMode("files")}
+            >
+              <span>View active files</span>
+            </button>
+          )}
         </aside>
 
         <div className="panel-box-body file-browser-main">
@@ -694,7 +915,7 @@ export function FileBrowser({ client, deviceId, onSelectDevice, devices, masterK
                         <tr key={f.id}>
                           <td>
                             <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 600 }}>
-                              <span>{getFileIcon(f.name, f.mimeType)}</span>
+                              <ThumbnailIcon file={f} client={client} masterKey={masterKey} />
                               <span style={{ color: "var(--text-main)" }}>{f.name}</span>
                             </div>
                           </td>

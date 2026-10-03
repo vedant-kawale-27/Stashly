@@ -56,13 +56,27 @@ The client exchanges structured JSON messages with the broker over the persisten
 | `hello` | Phone &rarr; Broker | `deviceId` | Initial handshake upon WebSocket connection. |
 | `file_sync` | Phone &rarr; Broker | `files: Array<FileSyncEntry>` | Batch sync of file metadata, hashes, MIME types, and wrapped DEKs. |
 | `fetch_request` | Broker &rarr; Phone | `requestId`, `path` | Broker requests ciphertext for a specific file path. |
-| `fetch_result` | Phone &rarr; Broker | `requestId`, `ok`, `dataBase64`, `error` | Base64-encoded file ciphertext payload returned by the node. |
+| `fetch_result` | Phone &rarr; Broker | `requestId`, `ok`, `dataBase64`, `error` | Legacy Base64 whole-file ciphertext response; retained for older `single` entries. |
 | `node_unlinked` | Broker &rarr; Phone | `reason` | Notification that the node was removed from the web console; triggers local reset. |
 | `client_unlinked` | Broker &rarr; Phone | `userId` | Notification that a specific client was disconnected. |
 | `client_presence` | Broker &rarr; Phone | `userId`, `online` | Real-time status update of client activity on the web dashboard. |
 | `upload_request` | Broker &rarr; Phone | `requestId`, `path`, `dataBase64`, `encryptedDek` | Sends encrypted ciphertext to the node for storage. |
 | `upload_result` | Phone &rarr; Broker | `requestId`, `ok`, `error` | Acknowledges an encrypted upload. |
 | `sync_request` | Broker &rarr; Phone | `requestId` | Requests a fresh metadata synchronization. |
+
+### Chunked file retrieval and thumbnails
+
+Files larger than 1 MiB are marked for chunked retrieval by the broker. The
+phone handles `fetch_chunk` requests by reading the requested range from the
+source file and encrypting that chunk independently with AES-GCM using a fresh
+IV. The response is sent as a binary WebSocket frame, avoiding Base64 overhead
+and whole-file messages. `thumbnail_request` generates a small encrypted image
+or video thumbnail on demand; thumbnails are cached only in the app's private
+storage and are never included in the full metadata sync payload.
+
+The older `fetch_request` / `fetch_result` flow remains available for legacy
+whole-file entries. Chunked reads validate that the resolved path remains
+inside the shared storage root before opening it.
 
 ---
 

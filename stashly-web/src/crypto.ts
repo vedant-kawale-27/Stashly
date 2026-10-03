@@ -66,6 +66,85 @@ export async function decryptFile(dek: Uint8Array, ciphertext: ArrayBuffer): Pro
   return aesGcmDecrypt(dek, ciphertext);
 }
 
+/**
+ * Check if the ciphertext uses the chunked format from streaming downloads.
+ * Chunked format: [4-byte BE chunk count][4-byte BE len][chunk]...
+ *
+ * NOTE: This is a FALLBACK heuristic. The primary detection should use the
+ * `encryptionFormat` field from the API response. Only use this when the
+ * format field is missing (backward compatibility with untagged files).
+ */
+export function isChunkedCiphertext(data: ArrayBuffer): boolean {
+  if (data.byteLength < 8) return false;
+  const view = new DataView(data);
+  const count = view.getUint32(0, false);
+  // Sanity: chunk count should be reasonable (1–10000) and first chunk length should fit
+  if (count < 1 || count > 10000) return false;
+  const firstLen = view.getUint32(4, false);
+  // Each encrypted chunk has at least 28 bytes overhead (12 IV + 16 tag)
+  if (firstLen < 28 || firstLen > 2 * 1024 * 1024) return false;
+  // Total expected size should roughly match
+  const expectedMin = 4 + count * 4 + count * 28;
+  return data.byteLength >= expectedMin;
+}
+
+/**
+ * Decrypt a chunked ciphertext. Each chunk was independently AES-GCM
+ * encrypted by the Android device, so each has its own 12-byte IV.
+ * Format: [4-byte BE count][4-byte BE len1][chunk1][4-byte BE len2][chunk2]...
+ *
+ * Validates chunk boundaries to prevent reading past the buffer.
+ */
+export async function decryptChunkedFile(dek: Uint8Array, data: ArrayBuffer): Promise<ArrayBuffer> {
+  if (data.byteLength < 4) {
+    throw new Error("Chunked data too short to contain chunk count");
+  }
+  const view = new DataView(data);
+  const count = view.getUint32(0, false);
+  if (count < 1 || count > 10000) {
+    throw new Error(`Invalid chunk count: ${count}`);
+  }
+
+  const plaintextParts: ArrayBuffer[] = [];
+  let offset = 4;
+
+  for (let i = 0; i < count; i++) {
+    if (offset + 4 > data.byteLength) {
+      throw new Error(`Chunk ${i}: length header extends past buffer (offset ${offset}, size ${data.byteLength})`);
+    }
+    const chunkLen = view.getUint32(offset, false);
+    offset += 4;
+
+    if (chunkLen < 28) {
+      throw new Error(`Chunk ${i}: too small (${chunkLen} bytes, need at least 28 for IV+tag)`);
+    }
+    if (chunkLen > 2 * 1024 * 1024) {
+      throw new Error(`Chunk ${i}: unreasonably large (${chunkLen} bytes)`);
+    }
+    if (offset + chunkLen > data.byteLength) {
+      throw new Error(`Chunk ${i}: data extends past buffer (need ${offset + chunkLen}, have ${data.byteLength})`);
+    }
+
+    const chunk = data.slice(offset, offset + chunkLen);
+    offset += chunkLen;
+    plaintextParts.push(await aesGcmDecrypt(dek, chunk));
+  }
+
+  if (offset !== data.byteLength) {
+    throw new Error("Unexpected trailing data in chunked ciphertext");
+  }
+
+  // Concatenate all plaintext chunks
+  const totalLength = plaintextParts.reduce((sum, p) => sum + p.byteLength, 0);
+  const result = new Uint8Array(totalLength);
+  let pos = 0;
+  for (const part of plaintextParts) {
+    result.set(new Uint8Array(part), pos);
+    pos += part.byteLength;
+  }
+  return result.buffer;
+}
+
 /** Encrypt a file with a fresh per-file data key. */
 export async function encryptFile(plaintext: ArrayBuffer): Promise<{ ciphertext: ArrayBuffer; dek: Uint8Array }> {
   const dek = crypto.getRandomValues(new Uint8Array(32));

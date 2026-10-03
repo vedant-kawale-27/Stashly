@@ -1,0 +1,7 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" xmlns:app="http://schemas.android.com/apk/res-auto" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical" android:orientation="horizontal" android:paddingVertical="10dp">
+    <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:orientation="vertical">
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Bluetooth" android:textColor="@color/text_primary_light" android:textSize="14sp" android:textStyle="bold" />
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Required to transfer the master key securely." android:textColor="@color/text_secondary_light" android:textSize="12sp" />
+    </LinearLayout>
+    <Button android:id="@+id/btnBluetoothPermission" style="@style/Widget.MaterialComponents.Button.OutlinedButton" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Allow" android:textColor="@color/primary" app:cornerRadius="18dp" app:strokeColor="@color/primary" app:strokeWidth="1dp" />
+</LinearLayout>

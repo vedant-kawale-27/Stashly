@@ -1,94 +1,204 @@
-# Stashly
+# 📦 Stashly — Decentralized Zero-Knowledge Mobile Cloud Storage
 
-Stashly turns an Android phone into a remotely accessible, hardware-backed
-encrypted storage node. The web console can browse and retrieve files without
-giving the broker a master key or plaintext file content.
+**Stashly** transforms any Android handset into an always-on, hardware-encrypted cloud storage node. Access, stream, and download files from anywhere via the Stashly Web Dashboard or Windows Network Drive without exposing unencrypted data to any third-party or relay server.
 
-## Architecture
+---
+
+## 🏗️ Architecture Overview
+
+Stashly employs a distributed, client-side zero-knowledge architecture divided into three distinct operational planes: the **Mobile Storage Plane** (`stashly-android`), the **Zero-Knowledge Relay Plane** (`stashly-broker`), and the **Consumer Client Plane** (`stashly-web` & Desktop Clients).
+
+### System Component Diagram
 
 ```mermaid
-graph LR
-  Android["Android storage node<br/>Kotlin + Keystore"] <-->|"WSS + encrypted payloads"| Broker["Broker<br/>Express + Prisma + PostgreSQL"]
-  Web["Web console<br/>React + WebCrypto"] <-->|"HTTPS"| Broker
+graph TB
+    subgraph "Mobile Storage Plane (Android Device)"
+        direction TB
+        PhoneStorage["Internal Storage (/storage/emulated/0)"]
+        FileVault["FileVault Traversal & Indexer"]
+        Keystore["Android Keystore (256-bit AES Master Key)"]
+        LocalCache["App-Private Encrypted Cache"]
+        CryptoEngine["AES-256-GCM Envelope Encryption"]
+        Service["StorageNodeService (Foreground Service)"]
+        PhoneWS["BrokerSocketClient (Outbound TLS/WSS)"]
+
+        PhoneStorage --> FileVault
+        FileVault --> CryptoEngine
+        Keystore --> CryptoEngine
+        CryptoEngine --> LocalCache
+        LocalCache --> Service
+        Service --> PhoneWS
+    end
+
+    subgraph "Relay Plane (Stashly Broker Server)"
+        direction TB
+        WSServer["DeviceHub (WebSocket Connection Pool)"]
+        RESTServer["Express REST API & Router"]
+        AuthModule["JWT Auth & Pairing Manager"]
+        AccessEngine["Access Scope Validator (src/access.ts)"]
+        PostgresDB[("PostgreSQL Database (Prisma ORM)")]
+        DiskCache["Encrypted Storage Cache (/storage/cache)"]
+
+        WSServer <--> AccessEngine
+        RESTServer <--> AuthModule
+        RESTServer <--> AccessEngine
+        AccessEngine <--> PostgresDB
+        WSServer --> DiskCache
+    end
+
+    subgraph "Consumer Client Plane (Web & Desktop)"
+        direction TB
+        WebUI["React 18 Web Dashboard"]
+        WebCrypto["W3C Web Crypto Engine (In-Memory)"]
+        BrowserSession["Session Master Key (Client Memory)"]
+        WinDrive["Windows WebDAV Mapped Drive (Z:)"]
+
+        WebUI <--> WebCrypto
+        BrowserSession --> WebCrypto
+    end
+
+    %% Network Connections
+    PhoneWS <===>|"Outbound WSS: hello / file_sync / fetch_chunk responses"| WSServer
+    WebUI <===>|"HTTPS: REST API & Presence Heartbeat"| RESTServer
+    WebUI <===>|"HTTPS: Download Ciphertext + Wrapped DEK"| RESTServer
+    WinDrive -.->|"WebDAV Protocol (Z: Drive)"| RESTServer
 ```
 
-The Android node encrypts each file with a random AES-256-GCM data encryption
-key (DEK), then wraps that DEK with a device master key held by Android
-Keystore. The broker stores metadata, wrapped DEKs, and opaque ciphertext only.
-The browser keeps configured master keys locally and decrypts only in memory.
+---
 
-## Repository structure
+### End-to-End Operational Lifecycle
 
-| Directory | Purpose |
-| --- | --- |
-| [`stashly-android/`](./stashly-android) | Android storage node, foreground service, indexing, encryption, pairing, uploads, and Bluetooth key sharing |
-| [`stashly-broker/`](./stashly-broker) | REST/WebSocket relay, authentication, scopes, sharing, MFA, audit logging, cache, and PostgreSQL schema |
-| [`stashly-web/`](./stashly-web) | React dashboard, file browser, device management, offline encrypted cache, PWA assets, and settings |
-| [`docs/`](./docs) | Additional project documentation |
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as User (Web Dashboard)
+    participant Web as Stashly Web (Browser)
+    participant Broker as Stashly Broker (Server)
+    participant DB as PostgreSQL (Prisma)
+    participant Phone as Stashly Android (Phone Node)
 
-## Quick start
+    Note over User,Phone: Phase 1: 1-Tap QR Code / Manual Pairing
+    User->>Web: Clicks "Pair Phone (QR Code)"
+    Web->>Broker: POST /devices/pairing-tokens
+    Broker->>DB: Generates single-use 8-digit token
+    Broker-->>Web: Returns token + QR payload
+    Web-->>User: Displays dynamic QR code
+    User->>Phone: Scans QR code with camera
+    Phone->>Broker: POST /devices/pair (Token + Hardware Info)
+    Broker->>DB: Validates token, links user-device, issues Device JWT
+    Broker-->>Phone: Returns deviceToken & deviceId
+    Phone->>Phone: Generates 256-bit AES Master Key in Android Keystore
 
-### Broker
+    Note over Phone,Broker: Phase 2: Persistent Outbound Connection & Sync
+    Phone->>Broker: Connects to wss://<broker>/ws/device?token=<deviceToken>
+    Broker->>Phone: WebSocket Connected & Authenticated
+    Phone->>Phone: FileVault scans storage, generates per-file DEKs, encrypts & wraps
+    Phone->>Broker: Sends "file_sync" frame (Metadata + ContentHash + Encrypted DEKs)
+    Broker->>DB: Upserts file records into PostgreSQL
+
+    Note over User,Phone: Phase 3: Zero-Knowledge File Retrieval
+    User->>Web: Inputs Master Key & Requests File Download
+    Web->>Broker: GET /files/:id/download (Auth Bearer Token)
+    Broker->>Broker: Validates client access scope (ALL / CUSTOM_FOLDER / FILE)
+    Broker->>Phone: Sends fetch_chunk (requestId, path, offset, length) over WebSocket
+    Phone->>Phone: Reads the requested range and encrypts it independently
+    Phone-->>Broker: Replies with a binary AES-GCM chunk frame
+    Broker-->>Web: Relays framed encrypted chunks + X-Encrypted-Dek header
+    Web->>Web: In-Memory WebCrypto unwraps DEK using Master Key
+    Web->>Web: Decrypts AES-256-GCM ciphertext -> Plaintext File
+    Web-->>User: Triggers browser download / preview
+```
+
+### Progressive file delivery
+
+The file browser loads metadata before file contents. Image and video
+thumbnails are requested on demand from the Android node and decrypted only in
+the browser. For images, the preview opens with the thumbnail first and then
+replaces it with the full-resolution image after the encrypted download is
+complete.
+
+Files larger than 1 MiB use independently authenticated AES-256-GCM chunks.
+The broker relays those binary chunks without decrypting them. The web console
+can write each chunk directly to a local file when the browser supports the
+File System Access API. Legacy whole-file entries remain supported for
+backward compatibility.
+
+---
+
+## 🔒 End-to-End Encryption & Zero-Trust Boundary
+
+| Data Type | Mobile Device (`stashly-android`) | Relay Server (`stashly-broker`) | Consumer Browser (`stashly-web`) |
+| :--- | :--- | :--- | :--- |
+| **Original File Content** | Accessible via OS filesystem | **Never Seen** (Strictly forbidden) | Decrypted in-memory on demand |
+| **Data Encryption Keys (DEKs)** | Generated randomly per file | **Never Seen** | Decrypted in browser memory |
+| **Master Key (256-bit AES)** | Stored in Android Keystore | **Never Transmitted to Broker** | Kept in local session memory |
+| **Ciphertext & Wrapped DEKs** | Created & cached locally | Relayed & cached on disk | Downloaded & unwrapped |
+| **File Metadata (Name, Size)** | Indexed from phone filesystem | Stored in PostgreSQL | Displayed in Vault Explorer |
+
+---
+
+## 📁 Repository Structure
+
+| Directory | Description | Technology Stack |
+| :--- | :--- | :--- |
+| [`stashly-android/`](./stashly-android) | Android storage node background app | Kotlin, Coroutines, OkHttp, Android Keystore, ZXing |
+| [`stashly-broker/`](./stashly-broker) | Real-time relay server, auth & metadata DB | Node.js, Express, TypeScript, Prisma, PostgreSQL, WS |
+| [`stashly-web/`](./stashly-web) | Modern web dashboard & file explorer | React 18, TypeScript, Vite, WebCrypto, Vanilla CSS |
+
+---
+
+## 🚀 Quickstart Guide
+
+### 1. Start the Broker Server (`stashly-broker`)
 
 ```bash
 cd stashly-broker
 npm install
-copy .env.example .env
-# Set DATABASE_URL and a strong JWT_SECRET in .env
+cp .env.example .env
+
+# Configure DATABASE_URL and JWT_SECRET in .env
 npm run prisma:migrate
 npm run dev
 ```
+*Broker runs on `http://localhost:4000` (or your local LAN IP).*
 
-The broker listens on `http://localhost:4000` by default. Production startup
-uses `npm start`, which deploys migrations before launching the compiled
-server. PostgreSQL is required.
+---
 
-### Web console
+### 2. Start the Web Console (`stashly-web`)
 
 ```bash
 cd stashly-web
 npm install
 npm run dev
 ```
+*Web dashboard runs on `http://localhost:5173`.*
 
-Set `VITE_BROKER_URL` when the broker is not reachable at the default
-development URL. The production bundle is created with `npm run build`.
+---
 
-The console supports QR/manual pairing, device selection, scoped access,
-live presence, encrypted previews/downloads, share-link management, dark
-mode, browser notifications, offline ciphertext caching, PWA installation,
-Windows WebDAV instructions, and Bluetooth master-key transfer where the
-browser supports Web Bluetooth.
+### 3. Run the Android App (`stashly-android`)
 
-### Android node
+1. Open `stashly-android` in **Android Studio** (Jellyfish or newer, JDK 17+).
+2. Build and install the app onto your Android device (`API 26+` / Android 8.0+).
+3. Grant **All Files Access** (Storage) and allow background activity.
+4. On the **New Connection** tab, tap **📷 Scan QR Code** to scan the pairing QR code from the Web Dashboard (or enter the 8-digit code manually).
+5. Choose your client file access scope (**All Storage**, **Specific Folder**, or **Specific File**).
 
-1. Open `stashly-android` in Android Studio with JDK 17 and Android SDK 34.
-2. Build and install with `./gradlew assembleDebug`.
-3. Grant the requested storage, notification, camera, and battery-optimization
-   permissions.
-4. Pair from the web console by scanning its QR code or entering its code.
-5. Keep the foreground storage service enabled for indexing and reconnects.
+---
 
-The debug build permits local HTTP broker development. Release deployments
-should use HTTPS/WSS and a properly configured network security policy.
+## ⚡ Core Features
 
-## Security model
+- **📷 1-Tap QR Auto-Pairing**: Instant discovery and secure token exchange between web dashboard and phone.
+- **🌐 Full Filesystem & Scoped Access**: Expose the whole internal storage or restrict individual clients to specific folders/files.
+- **⚡ Real-Time Telemetry & Status**: Live stream indicator, client presence heartbeats, last synced timestamps, and online/offline badges.
+- **📦 Chunked File Transfer**: Large files travel as authenticated encrypted chunks instead of one large Base64 WebSocket message.
+- **🖼️ Progressive Image Preview**: Show an encrypted thumbnail immediately, then replace it with the full-resolution image.
+- **🛡️ Granular Access Controls**: Dynamically pause sharing or remove client connections from the Android app or web console.
+- **💻 Windows Network Drive Integration**: Mount your phone's encrypted vault as a Windows mapped drive.
+- **🔄 Fault-Tolerant Reconnects**: Foreground service with battery-optimization exemptions and auto-reconnect logic.
 
-- Passwords are hashed and authenticated with JWTs; auth and pairing endpoints
-  are rate limited and protected with security headers.
-- Optional authenticator-app MFA uses TOTP. MFA secrets are encrypted at rest
-  using a key derived from `JWT_SECRET`.
-- Access is enforced per user/device with `ALL`, `CUSTOM_FOLDER`,
-  `CUSTOM_FILE`, or `NONE` scopes and can be paused without unpairing.
-- Expiring, revocable share links expose only the selected file and record
-  access metadata.
-- File versions, upload sessions, device telemetry, and security audit events
-  are persisted by the broker without storing plaintext.
-- Browser offline storage contains ciphertext and wrapped DEKs only; clearing
-  browser security data removes local keys and cached ciphertext, not account
-  or device records.
+---
 
-## License
+## 📜 License
 
-GNU Affero General Public License v3.0 (AGPL-3.0). Copyright (C) 2026 Vedant
-Kawale. See [`LICENSE`](./LICENSE).
+GNU Affero General Public License v3.0 (AGPL-3.0). Copyright (C) 2026 Vedant Kawale.
+See [`LICENSE`](./LICENSE) for full legal terms.

@@ -9,10 +9,16 @@
 package com.stashly.app
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.media.ThumbnailUtils
 import android.os.Build
 import android.os.Environment
+import android.provider.MediaStore
+import android.util.Size
 import android.webkit.MimeTypeMap
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.security.MessageDigest
 import java.util.UUID
@@ -24,6 +30,14 @@ data class FileSyncEntry(
     val contentHash: String,
     val mimeType: String?,
     val encryptedDek: String
+)
+
+data class TrashEntry(
+    val path: String,
+    val name: String,
+    val sizeBytes: Long,
+    val trashedAt: Long,
+    val isDirectory: Boolean,
 )
 
 /**
@@ -84,8 +98,42 @@ class FileVault(
     private val cacheDir: File
         get() = File(context.filesDir, "encrypted_cache").apply { mkdirs() }
 
+    private val thumbsDir: File
+        get() = File(context.cacheDir, "stashly_thumbs").apply { mkdirs() }
+
     private val metadataFile: File
         get() = File(context.filesDir, "vault_metadata.json")
+
+    @Synchronized
+    fun listTrash(): List<TrashEntry> {
+        val metadata = loadMetadata()
+        val result = mutableListOf<TrashEntry>()
+        val keys = metadata.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            if (!key.startsWith("__trash_")) continue
+            val path = key.removePrefix("__trash_")
+            val record = metadata.optJSONObject(key) ?: continue
+            val trashName = record.optString("trashPath")
+            val trashFile = File(trashDir, trashName)
+            result += TrashEntry(
+                path = path,
+                name = path.substringAfterLast('/').ifEmpty { path },
+                sizeBytes = record.optLong("sizeBytes", 0L),
+                trashedAt = record.optLong("trashedAt", 0L),
+                isDirectory = trashFile.isDirectory,
+            )
+        }
+        return result.sortedByDescending { it.trashedAt }
+    }
+
+    @Synchronized
+    fun purgeExpiredTrash(now: Long = System.currentTimeMillis()): Int {
+        val cutoff = now - 30L * 24 * 60 * 60 * 1000
+        val expired = listTrash().filter { it.trashedAt in 1..cutoff }
+        expired.forEach { permanentDelete(it.path) }
+        return expired.size
+    }
 
     /** Re-scans the vault, (re)encrypting anything new or changed, and returns
      *  the full current file list to push to the broker as a `file_sync`.
@@ -174,13 +222,24 @@ class FileVault(
     }
 
     /** Ciphertext bytes for a previously-synced or trashed path, encrypted on-demand. */
+    /** Validates that a resolved path stays inside the given root. Prevents path traversal. */
+    private fun isInsideRoot(resolved: File, root: File): Boolean {
+        val rootPath = root.path + File.separator
+        return resolved.path.startsWith(rootPath) || resolved.path == root.path
+    }
+
     fun getCiphertext(path: String): ByteArray? {
         val cleanPath = path.replace('\\', '/').removePrefix("/")
+        if (cleanPath.split('/').contains("..")) return null
         val root = vaultDir.canonicalFile
         val file = File(root, cleanPath).canonicalFile
+        val trashRoot = trashDir.canonicalFile
         val trashFile = File(trashDir, cleanPath.replace('/', '_')).canonicalFile
 
-        val target = if (file.exists() && file.isFile) file else if (trashFile.exists() && trashFile.isFile) trashFile else null
+        // Path containment: resolved path must stay inside vault or trash
+        val fileOk = file.exists() && file.isFile && isInsideRoot(file, root)
+        val trashOk = trashFile.exists() && trashFile.isFile && isInsideRoot(trashFile, trashRoot)
+        val target = if (fileOk) file else if (trashOk) trashFile else null
         if (target == null) return null
 
         val metadata = loadMetadata()
@@ -195,6 +254,65 @@ class FileVault(
             android.util.Log.e("FileVault", "Failed to encrypt $path on demand", e)
             null
         }
+    }
+
+    /**
+     * Reads a chunk of a file at the given byte offset, encrypts it independently
+     * with its own AES-GCM IV, and returns the encrypted chunk. Each chunk can be
+     * decrypted independently by the browser.
+     */
+    fun getChunkCiphertext(path: String, offset: Long, length: Int): ByteArray? {
+        val cleanPath = path.replace('\\', '/').removePrefix("/")
+        if (cleanPath.split('/').contains("..")) return null
+        val root = vaultDir.canonicalFile
+        val file = File(root, cleanPath).canonicalFile
+        val trashRoot = trashDir.canonicalFile
+        val trashFile = File(trashDir, cleanPath.replace('/', '_')).canonicalFile
+
+        // Path containment: resolved path must stay inside vault or trash
+        val fileOk = file.exists() && file.isFile && isInsideRoot(file, root)
+        val trashOk = trashFile.exists() && trashFile.isFile && isInsideRoot(trashFile, trashRoot)
+        val target = if (fileOk) file else if (trashOk) trashFile else null
+        if (target == null) return null
+
+        val metadata = loadMetadata()
+        val record = metadata.optJSONObject(path) ?: metadata.optJSONObject("__trash_$path") ?: return null
+        val wrappedDek = record.optString("wrappedDek").ifEmpty { return null }
+
+        return try {
+            val dek = keyManager.unwrapDek(wrappedDek)
+            val raf = java.io.RandomAccessFile(target, "r")
+            val fileSize = raf.length()
+            val actualOffset = offset.coerceAtMost(fileSize)
+            val actualLength = length.toLong().coerceAtMost(fileSize - actualOffset).toInt()
+            if (actualLength <= 0) {
+                raf.close()
+                return null
+            }
+            val buffer = ByteArray(actualLength)
+            raf.seek(actualOffset)
+            raf.readFully(buffer)
+            raf.close()
+            AesGcm.encrypt(dek, buffer)
+        } catch (e: Exception) {
+            android.util.Log.e("FileVault", "Failed to read chunk at $path offset=$offset", e)
+            null
+        }
+    }
+
+    /** Returns the raw (plaintext) file size in bytes for chunk calculation. */
+    fun getFileSize(path: String): Long {
+        val cleanPath = path.replace('\\', '/').removePrefix("/")
+        if (cleanPath.split('/').contains("..")) return -1L
+        val root = vaultDir.canonicalFile
+        val file = File(root, cleanPath).canonicalFile
+        val trashRoot = trashDir.canonicalFile
+        val trashFile = File(trashDir, cleanPath.replace('/', '_')).canonicalFile
+
+        val fileOk = file.exists() && file.isFile && isInsideRoot(file, root)
+        val trashOk = trashFile.exists() && trashFile.isFile && isInsideRoot(trashFile, trashRoot)
+        val target = if (fileOk) file else if (trashOk) trashFile else null
+        return target?.length() ?: -1L
     }
 
     /** Decrypts a browser upload locally, then writes the plaintext to shared storage. */
@@ -370,6 +488,114 @@ class FileVault(
     private fun guessMimeType(name: String): String? {
         val ext = name.substringAfterLast('.', "")
         return MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)
+    }
+
+    /**
+     * Public API for on-demand thumbnail generation. Called when the broker
+     * relays a thumbnail_request from the web client. Returns the encrypted
+     * thumbnail bytes, or null if not supported for this file type.
+     * Thumbnails are cached locally to avoid regeneration.
+     */
+    fun getEncryptedThumbnail(path: String): ByteArray? {
+        val cleanPath = path.replace('\\', '/').removePrefix("/")
+        if (cleanPath.split('/').contains("..")) return null
+        val root = vaultDir.canonicalFile
+        val file = File(root, cleanPath).canonicalFile
+        // Path containment: must stay inside vault
+        if (!isInsideRoot(file, root)) return null
+        if (!file.exists() || !file.isFile) return null
+
+        val metadata = loadMetadata()
+        val record = metadata.optJSONObject(path) ?: return null
+        val wrappedDek = record.optString("wrappedDek").ifEmpty { return null }
+        val contentHash = record.optString("contentHash").ifEmpty { return null }
+        val mime = guessMimeType(file.name)
+
+        return generateEncryptedThumbnail(file, mime, wrappedDek, contentHash)
+    }
+
+    /**
+     * Generates an encrypted thumbnail for image/video files.
+     * Returns the encrypted thumbnail bytes, or null if the file type
+     * doesn't support thumbnails or generation fails.
+     * Thumbnails are cached locally to avoid regeneration on every request.
+     */
+    private fun generateEncryptedThumbnail(
+        file: File,
+        mimeType: String?,
+        wrappedDek: String,
+        contentHash: String
+    ): ByteArray? {
+        val mime = mimeType ?: return null
+        if (!mime.startsWith("image/") && !mime.startsWith("video/")) return null
+
+        // Check cached thumbnail first (keyed by contentHash)
+        val cachedThumbFile = File(thumbsDir, "$contentHash.enc")
+        if (cachedThumbFile.exists()) {
+            return try {
+                cachedThumbFile.readBytes()
+            } catch (_: Exception) { null }
+        }
+
+        return try {
+            val bitmap: Bitmap? = when {
+                mime.startsWith("image/") -> {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        ThumbnailUtils.createImageThumbnail(file, Size(200, 200), null)
+                    } else {
+                        // Pre-Q fallback: decode with inSampleSize for efficiency
+                        val opts = BitmapFactory.Options().apply {
+                            inJustDecodeBounds = true
+                        }
+                        BitmapFactory.decodeFile(file.absolutePath, opts)
+                        val scale = maxOf(opts.outWidth / 200, opts.outHeight / 200, 1)
+                        val decodeOpts = BitmapFactory.Options().apply {
+                            inSampleSize = scale
+                        }
+                        val raw = BitmapFactory.decodeFile(file.absolutePath, decodeOpts)
+                        raw?.let {
+                            val w = minOf(it.width, 200)
+                            val h = (w.toFloat() / it.width * it.height).toInt().coerceAtLeast(1)
+                            Bitmap.createScaledBitmap(it, w, h, true).also { scaled ->
+                                if (scaled !== it) it.recycle()
+                            }
+                        }
+                    }
+                }
+                mime.startsWith("video/") -> {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        ThumbnailUtils.createVideoThumbnail(file, Size(200, 200), null)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        ThumbnailUtils.createVideoThumbnail(
+                            file.absolutePath,
+                            MediaStore.Images.Thumbnails.MINI_KIND
+                        )
+                    }
+                }
+                else -> null
+            }
+
+            if (bitmap == null) return null
+
+            // Compress to JPEG
+            val baos = ByteArrayOutputStream()
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 70, baos)
+            bitmap.recycle()
+            val jpegBytes = baos.toByteArray()
+
+            // Encrypt thumbnail with the same DEK as the file
+            val dek = keyManager.unwrapDek(wrappedDek)
+            val encryptedThumb = AesGcm.encrypt(dek, jpegBytes)
+
+            // Cache to disk
+            cachedThumbFile.writeBytes(encryptedThumb)
+
+            encryptedThumb
+        } catch (e: Exception) {
+            android.util.Log.w("FileVault", "Thumbnail generation failed for ${file.name}: ${e.message}")
+            null
+        }
     }
 
     private fun sha256Hex(bytes: ByteArray): String =

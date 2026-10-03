@@ -69,6 +69,18 @@ interface PendingFolder {
   timer: NodeJS.Timeout;
 }
 
+interface PendingChunk {
+  resolve: (data: Buffer) => void;
+  reject: (err: Error) => void;
+  timer: NodeJS.Timeout;
+}
+
+interface PendingThumbnail {
+  resolve: (data: Buffer) => void;
+  reject: (err: Error) => void;
+  timer: NodeJS.Timeout;
+}
+
 export interface DeviceTelemetry {
   modelName: string | null;
   modelNumber: string | null;
@@ -88,6 +100,8 @@ class DeviceHub {
   private pendingTrash = new Map<string, PendingTrash>();
   private pendingSyncs = new Map<string, PendingSync>();
   private pendingFolders = new Map<string, PendingFolder>();
+  private pendingChunks = new Map<string, PendingChunk>();
+  private pendingThumbnails = new Map<string, PendingThumbnail>();
   private clientPresence = new Map<string, number>(); // deviceId:userId -> last web heartbeat
   private clientOnlineState = new Map<string, boolean>(); // deviceId:userId -> explicit online status
   private telemetry = new Map<string, DeviceTelemetry>(); // live only; intentionally never persisted
@@ -190,7 +204,13 @@ class DeviceHub {
     }
 
     this.sockets.set(deviceId, socket);
-    socket.on("message", (raw) => this.handleMessage(deviceId, raw.toString()));
+    socket.on("message", (raw, isBinary) => {
+      if (isBinary) {
+        this.handleBinaryMessage(deviceId, raw as Buffer);
+      } else {
+        this.handleMessage(deviceId, raw.toString());
+      }
+    });
     socket.on("close", () => this.handleDisconnect(deviceId, socket));
   }
 
@@ -286,6 +306,8 @@ class DeviceHub {
     await prisma.fileEntry.deleteMany({ where: { deviceId, deletedAt: null } });
   }
 
+  private static readonly CHUNKED_THRESHOLD = 1024 * 1024; // 1 MB — files above this use chunked streaming
+
   private async handleFileSync(deviceId: string, files: any[]) {
     const validFiles = files.filter((file) =>
       file && typeof file.path === "string" && typeof file.name === "string" &&
@@ -299,9 +321,10 @@ class DeviceHub {
     });
     const removedFiles = existingFiles.filter((file) => !incomingPaths.has(file.path));
 
-    await Promise.all(removedFiles.map((file) => {
+    // Clean up cache files for removed entries
+    await Promise.all(removedFiles.map(async (file) => {
       const cacheName = file.cacheKey ?? `${file.id}.bin`;
-      return fs.promises.unlink(path.join(config.storageDir, cacheName)).catch(() => undefined);
+      await fs.promises.unlink(path.join(config.storageDir, cacheName)).catch(() => undefined);
     }));
     if (removedFiles.length > 0) {
       await prisma.fileEntry.deleteMany({ where: { id: { in: removedFiles.map((file) => file.id) } } });
@@ -318,6 +341,7 @@ class DeviceHub {
           },
         });
       }
+      const format = f.sizeBytes > DeviceHub.CHUNKED_THRESHOLD ? "chunked" : "single";
       await prisma.fileEntry.upsert({
         where: { deviceId_path: { deviceId, path: f.path } },
         create: {
@@ -328,6 +352,7 @@ class DeviceHub {
           contentHash: f.contentHash,
           mimeType: f.mimeType ?? null,
           encryptedDek: f.encryptedDek,
+          encryptionFormat: format,
         },
         update: {
           name: f.name,
@@ -335,6 +360,7 @@ class DeviceHub {
           contentHash: f.contentHash,
           mimeType: f.mimeType ?? null,
           encryptedDek: f.encryptedDek,
+          encryptionFormat: format,
           deletedAt: null,
         },
       });
@@ -417,6 +443,115 @@ class DeviceHub {
 
     socket.send(JSON.stringify({ type: "fetch_request", requestId, path }));
     return result;
+  }
+
+  /**
+   * Request a single chunk of a file from the phone. The phone reads `length`
+   * bytes starting at `offset`, encrypts the chunk independently (its own
+   * AES-GCM IV), and returns it as a binary WS frame.
+   */
+  async requestChunk(
+    deviceId: string,
+    filePath: string,
+    offset: number,
+    length: number,
+    signal?: AbortSignal,
+  ): Promise<Buffer> {
+    const socket = this.sockets.get(deviceId);
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      throw new Error("DEVICE_OFFLINE");
+    }
+
+    const requestId = uuid();
+    const result = new Promise<Buffer>((resolve, reject) => {
+      const cancel = () => {
+        clearTimeout(timer);
+        this.pendingChunks.delete(requestId);
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({ type: "cancel_request", requestId }));
+        }
+        reject(new Error("REQUEST_CANCELLED"));
+      };
+      const timer = setTimeout(() => {
+        this.pendingChunks.delete(requestId);
+        signal?.removeEventListener("abort", cancel);
+        reject(new Error("DEVICE_TIMEOUT"));
+      }, config.deviceFetchTimeoutMs);
+      if (signal?.aborted) {
+        cancel();
+        return;
+      }
+      signal?.addEventListener("abort", cancel, { once: true });
+      this.pendingChunks.set(requestId, { resolve, reject, timer });
+    });
+
+    socket.send(JSON.stringify({ type: "fetch_chunk", requestId, path: filePath, offset, length }));
+    return result;
+  }
+
+  /**
+   * Request a thumbnail on-demand from the phone. The phone generates the
+   * thumbnail, encrypts it with the file's DEK, and returns it as a binary
+   * WS frame. The broker never stores the thumbnail — it relays it.
+   */
+  async requestThumbnail(deviceId: string, filePath: string): Promise<Buffer> {
+    const socket = this.sockets.get(deviceId);
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      throw new Error("DEVICE_OFFLINE");
+    }
+
+    const requestId = uuid();
+    const result = new Promise<Buffer>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingThumbnails.delete(requestId);
+        reject(new Error("DEVICE_TIMEOUT"));
+      }, config.deviceFetchTimeoutMs);
+      this.pendingThumbnails.set(requestId, { resolve, reject, timer });
+    });
+
+    socket.send(JSON.stringify({ type: "thumbnail_request", requestId, path: filePath }));
+    return result;
+  }
+
+  /**
+   * Handle binary WS frames from the phone.
+   *
+   * Format (38+ bytes):
+   *   [36-byte requestId UTF-8][1-byte type: 0x01=chunk, 0x02=thumbnail][1-byte status: 0x01=ok, 0x00=error][payload]
+   *
+   * The type byte at position 36 distinguishes chunk data from thumbnail data
+   * so the correct pending-promise map is resolved.
+   */
+  private handleBinaryMessage(deviceId: string, data: Buffer) {
+    if (data.length < 38) return; // too short
+    const requestId = data.subarray(0, 36).toString("utf-8");
+    const frameType = data[36]; // 0x01 = chunk, 0x02 = thumbnail
+    const status = data[37];
+    const payload = data.subarray(38);
+
+    if (frameType === 0x02) {
+      // Thumbnail response
+      const pending = this.pendingThumbnails.get(requestId);
+      if (!pending) return;
+      clearTimeout(pending.timer);
+      this.pendingThumbnails.delete(requestId);
+      if (status === 1 && payload.length > 0) {
+        pending.resolve(payload);
+      } else {
+        pending.reject(new Error("Device returned empty or error thumbnail"));
+      }
+    } else {
+      // Chunk response (0x01 or legacy)
+      const pending = this.pendingChunks.get(requestId);
+      if (!pending) return;
+      clearTimeout(pending.timer);
+      this.pendingChunks.delete(requestId);
+      if (status === 1 && payload.length > 0) {
+        pending.resolve(payload);
+      } else {
+        pending.reject(new Error("Device returned empty or error chunk"));
+      }
+    }
   }
 
   async uploadFile(deviceId: string, path: string, dataBase64: string, encryptedDek: string): Promise<void> {

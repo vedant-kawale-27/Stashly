@@ -7,6 +7,8 @@ The broker operates on a zero-knowledge trust model: it manages access tokens, r
 Recent additions include device system information and live telemetry, file
 versions and upload sessions, expiring share links, encrypted TOTP MFA
 secrets, security audit logs, request rate limits, and hardened HTTP headers.
+Large files also use binary, independently authenticated encrypted chunks;
+the broker relays these chunks without decrypting them.
 
 ---
 
@@ -76,7 +78,13 @@ The real-time communication pipeline between the broker and mobile devices is ma
    - When a client requests a file download (`GET /files/:id/download`), the broker generates a UUID `requestId` and stores a pending Promise in memory with a 15-second timeout (`DEVICE_FETCH_TIMEOUT_MS`).
    - The broker sends `{ type: "fetch_request", requestId, path }` to the phone over WebSocket.
    - The phone reads the encrypted data and replies with `{ type: "fetch_result", requestId, ok: true, dataBase64 }`.
-   - The pending Promise resolves with the binary Buffer, writes a copy to the local cache (`storage/cache/<fileId>.bin`), and streams the ciphertext to the client.
+   - For legacy `single` entries, the pending Promise resolves with the binary Buffer, writes a copy to the local cache (`storage/cache/<fileId>.bin`), and streams the ciphertext to the client.
+
+   For files larger than 1 MiB, `DeviceHub` uses `fetch_chunk` requests instead.
+   Each response is a binary frame containing the UUID, frame type, status, and
+   encrypted chunk. The download route relays framed chunks with backpressure,
+   supports chunk-aligned HTTP ranges, and cancels the outstanding Android
+   request when the browser closes the response.
 
 3. **Presence and Push Telemetry**:
    - When web clients interact with the dashboard, heartbeats are sent to `/devices/presence`.
@@ -123,6 +131,12 @@ The real-time communication pipeline between the broker and mobile devices is ma
     - `Content-Type: application/octet-stream`
     - `X-Encrypted-Dek: <base64_wrapped_dek>`
     - `X-From-Local-Cache: true|false`
+- Large files use `?stream=chunked` and return framed encrypted chunks with
+  `X-Chunk-Size`, `X-Chunk-First`, and `X-Chunk-Last` headers. The broker never
+  decrypts or buffers the complete chunked file.
+- **`GET /files/:id/thumbnail`** *(Requires User Auth)*: Request a live,
+  encrypted thumbnail from Android. The response is `no-store` and is not
+  persisted as decrypted broker data.
 
 ### Sharing Routes (`/shares`)
 

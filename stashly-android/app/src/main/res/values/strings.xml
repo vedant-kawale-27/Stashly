@@ -3,10 +3,6 @@
     <string name="user_access_scope_none">Access: Not shared</string>
     <string name="user_access_scope_folder">Access: %1$s</string>
     <string name="user_access_scope_file">Access: File %1$s</string>
-    <string name="device_file_access_allowed">Device file access: Allowed</string>
-    <string name="device_file_access_not_allowed">Device file access: Not granted</string>
-    <string name="client_access_list_title">All connected clients</string>
-    <string name="client_access_managed">Permission is managed by that client.</string>
     <string name="btn_change_client_access">Change access</string>
     <string name="app_name">Stashly Node</string>
     <string name="notification_channel_name">Stashly Storage Node</string>
@@ -37,14 +33,13 @@
     <string name="btn_start_node">Start Node</string>
     <string name="btn_stop_node">Stop Node</string>
     <string name="btn_granted">Granted</string>
+    <string name="permission_not_granted">Not granted</string>
 
     <string name="clients_not_paired">• No paired accounts\n• Go to \'New Connection\' page to pair</string>
     <string name="status_paused">🟡 Node Service Paused</string>
     <string name="last_live_never">Never recorded</string>
     <string name="last_synced_format">Last synced: %1$s</string>
 
-    <string name="battery_status_allowed">Status: Allowed (Optimal for background sync)</string>
-    <string name="battery_status_active">Status: Optimization active (May sleep)</string>
 
     <string name="toast_pair_first">Pair device first</string>
     <string name="toast_node_stopped">Storage node stopped</string>
@@ -62,7 +57,6 @@
     <string name="scope_option_file">Only a specific file</string>
     <string name="toast_access_scope_error">Could not save client access: %1$s</string>
     <string name="toast_access_scope_saved">Client file access updated.</string>
-    <string name="toast_storage_default">Storage access granted by default on this OS version</string>
     <string name="toast_no_key">No master key generated yet. Pair the device first.</string>
     <string name="toast_node_cleared">Node credentials and broker data cleared</string>
     <string name="toast_reset_error">Could not complete the full node reset: %1$s</string>
@@ -87,11 +81,8 @@
     <string name="folder_selected_default">Selected Folder</string>
     <string name="storage_scope_all_status">Current Scope: 🌐 All Internal Storage (/storage/emulated/0)</string>
     <string name="storage_restricted_to">Restricted to: %1$s</string>
-    <string name="storage_full_access_desc">Full filesystem access granted (indexes all files &amp; directories).</string>
-    <string name="storage_limited_access_desc">Limited access. Grant full storage or pick a specific folder above.</string>
     <string name="btn_choose_folder">📁 Choose Folder</string>
     <string name="btn_change_folder">📁 Change Folder</string>
-    <string name="btn_all_storage">🌐 All Storage</string>
     <string name="toast_folder_picker_error">Cannot open folder picker: %1$s</string>
     <string name="toast_scope_internal_all">Access granted to entire internal storage</string>
     <string name="client_platform_title">💻 Client: Stashly Web Dashboard</string>
@@ -136,4 +127,5 @@
     <string name="toast_client_sharing_started">Sharing started for this client.</string>
     <string name="toast_client_connection_removed">Client connection removed.</string>
     <string name="dialog_btn_ok">OK</string>
+    <string name="widget_description">Stashly storage node status, storage, clients, and quick actions</string>
 </resources>

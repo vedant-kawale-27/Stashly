@@ -59,6 +59,8 @@ export interface FileMeta {
   cachedAt?: string | null;
   lastAccessAt?: string | null;
   deletedAt?: string | null;
+  hasThumbnail?: boolean;
+  encryptionFormat?: "single" | "chunked";
 }
 
 export interface DownloadedFile {
@@ -385,7 +387,13 @@ export class BrokerClient {
     invalidateCache(`${this.baseUrl}:devices:${this.token ?? "anonymous"}`);
   }
 
-  async downloadFile(fileId: string): Promise<DownloadedFile> {
+  async downloadFile(fileId: string, encryptionFormat?: string): Promise<DownloadedFile> {
+    // Use chunked streaming for files tagged as "chunked" format
+    if (encryptionFormat === "chunked") {
+      return this.downloadFileChunked(fileId);
+    }
+
+    // Legacy full-file download for "single" format (or untagged files)
     const res = await fetch(`${this.baseUrl}/files/${fileId}/download`, {
       headers: this.authHeaders(),
     });
@@ -402,6 +410,180 @@ export class BrokerClient {
     const fromCache = res.headers.get("X-From-Local-Cache") === "true";
     const ciphertext = await res.arrayBuffer();
     return { ciphertext, wrappedDek, fromCache };
+  }
+
+  /**
+   * Download a file using chunked streaming. Each chunk is independently
+   * AES-GCM encrypted and can be decrypted separately. The broker never
+   * holds the full file in memory — it relays chunks from the Android device.
+   *
+   * Response format: [4-byte BE length][encrypted chunk]...[0x00000000]
+   */
+  async downloadFileChunked(
+    fileId: string,
+    range?: { start: number; end?: number },
+  ): Promise<DownloadedFile> {
+    const headers = new Headers(this.authHeaders());
+    if (range) headers.set("Range", `bytes=${range.start}-${range.end ?? ""}`);
+    const res = await fetch(`${this.baseUrl}/files/${fileId}/download?stream=chunked`, {
+      headers,
+    });
+    if (!res.ok) {
+      const json = await res.json().catch(() => ({}));
+      throw new ApiError(json.error ?? `Chunked download failed (HTTP ${res.status})`, res.status, json.code);
+    }
+
+    const wrappedDek = res.headers.get("X-Encrypted-Dek");
+    if (!wrappedDek) {
+      throw new ApiError("Broker didn't return X-Encrypted-Dek for chunked download");
+    }
+
+    const reader = res.body?.getReader();
+    if (!reader) {
+      throw new ApiError("Browser doesn't support ReadableStream");
+    }
+
+    // Read the full response and parse length-prefixed chunks
+    const encryptedChunks: Uint8Array[] = [];
+    let buffer = new Uint8Array(0);
+    let ended = false;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (value) {
+        // Append to buffer
+        const newBuf = new Uint8Array(buffer.length + value.length);
+        newBuf.set(buffer, 0);
+        newBuf.set(value, buffer.length);
+        buffer = newBuf;
+      }
+
+      // Parse complete chunks from buffer
+      while (buffer.length >= 4) {
+        const chunkLen = new DataView(buffer.buffer, buffer.byteOffset).getUint32(0, false);
+        if (chunkLen === 0) {
+          // End marker
+          if (buffer.length !== 4) throw new ApiError("Unexpected data after chunked end marker");
+          ended = true;
+          buffer = new Uint8Array(0);
+          break;
+        }
+        if (buffer.length < 4 + chunkLen) break; // need more data
+        encryptedChunks.push(buffer.slice(4, 4 + chunkLen));
+        buffer = buffer.subarray(4 + chunkLen);
+      }
+
+      if (done) break;
+    }
+
+    if (!ended || buffer.length !== 0) {
+      throw new ApiError("Chunked download ended before a valid end marker");
+    }
+
+    // Combine all encrypted chunks into a single ArrayBuffer for decryption.
+    // Each chunk has its own AES-GCM IV, so we need to decrypt them individually
+    // and then concatenate the plaintext.
+    // Return the chunks as a "ciphertext" that the caller will handle.
+    // We store them with a special format: [4-byte count][4-byte len1][chunk1][4-byte len2][chunk2]...
+    const totalEncryptedBytes = encryptedChunks.reduce((sum, c) => sum + c.length, 0);
+    const combined = new Uint8Array(4 + encryptedChunks.length * 4 + totalEncryptedBytes);
+    const view = new DataView(combined.buffer);
+    view.setUint32(0, encryptedChunks.length, false);
+    let offset = 4;
+    for (const chunk of encryptedChunks) {
+      view.setUint32(offset, chunk.length, false);
+      offset += 4;
+      combined.set(chunk, offset);
+      offset += chunk.length;
+    }
+
+    return {
+      ciphertext: combined.buffer as ArrayBuffer,
+      wrappedDek,
+      fromCache: false,
+    };
+  }
+
+  /**
+   * Stream a chunked download with per-chunk callback. Unlike downloadFileChunked()
+   * which buffers everything into one ArrayBuffer, this method delivers each
+   * encrypted chunk as it arrives. The caller can decrypt and write each chunk
+   * to a FileSystemWritableFileStream (File System Access API) or any other
+   * sink without holding the entire file in memory.
+   *
+   * Returns the wrappedDek so the caller can unwrap it once and decrypt all chunks.
+   */
+  async streamDownloadChunked(
+    fileId: string,
+    onEncryptedChunk: (chunk: Uint8Array, index: number, wrappedDek: string) => Promise<void>,
+    range?: { start: number; end?: number },
+  ): Promise<{ wrappedDek: string; chunkCount: number }> {
+    const headers = new Headers(this.authHeaders());
+    if (range) headers.set("Range", `bytes=${range.start}-${range.end ?? ""}`);
+    const res = await fetch(`${this.baseUrl}/files/${fileId}/download?stream=chunked`, {
+      headers,
+    });
+    if (!res.ok) {
+      const json = await res.json().catch(() => ({}));
+      throw new ApiError(json.error ?? `Streaming download failed (HTTP ${res.status})`, res.status, json.code);
+    }
+
+    const wrappedDek = res.headers.get("X-Encrypted-Dek");
+    if (!wrappedDek) {
+      throw new ApiError("Broker didn't return X-Encrypted-Dek for streaming download");
+    }
+
+    const reader = res.body?.getReader();
+    if (!reader) {
+      throw new ApiError("Browser doesn't support ReadableStream");
+    }
+
+    let buffer = new Uint8Array(0);
+    let chunkIndex = 0;
+    let finished = false;
+
+    while (!finished) {
+      const { done, value } = await reader.read();
+      if (value) {
+        const newBuf = new Uint8Array(buffer.length + value.length);
+        newBuf.set(buffer, 0);
+        newBuf.set(value, buffer.length);
+        buffer = newBuf;
+      }
+
+      // Parse and deliver complete chunks as they arrive
+      while (buffer.length >= 4) {
+        const chunkLen = new DataView(buffer.buffer, buffer.byteOffset).getUint32(0, false);
+        if (chunkLen === 0) {
+          if (buffer.length !== 4) throw new ApiError("Unexpected data after chunked end marker");
+          finished = true;
+          break;
+        }
+        if (buffer.length < 4 + chunkLen) break; // need more data
+        const chunk = buffer.slice(4, 4 + chunkLen);
+        buffer = buffer.subarray(4 + chunkLen);
+        await onEncryptedChunk(chunk, chunkIndex++, wrappedDek);
+      }
+
+      if (done) break;
+    }
+
+    if (!finished || buffer.length !== 0) {
+      throw new ApiError("Chunked stream ended before a valid end marker");
+    }
+
+    return { wrappedDek, chunkCount: chunkIndex };
+  }
+
+  async downloadThumbnail(fileId: string): Promise<DownloadedFile | null> {
+    const res = await fetch(`${this.baseUrl}/files/${fileId}/thumbnail`, {
+      headers: this.authHeaders(),
+    });
+    if (!res.ok) return null;
+    const wrappedDek = res.headers.get("X-Encrypted-Dek");
+    if (!wrappedDek) return null;
+    const ciphertext = await res.arrayBuffer();
+    return { ciphertext, wrappedDek };
   }
 
   async uploadFile(

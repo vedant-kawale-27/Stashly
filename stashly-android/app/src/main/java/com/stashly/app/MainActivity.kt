@@ -24,7 +24,6 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
-import android.os.PowerManager
 import android.os.StatFs
 import android.provider.DocumentsContract
 import android.provider.Settings
@@ -43,6 +42,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkManager
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -52,6 +54,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.TimeUnit
 
 class MainActivity : AppCompatActivity() {
 
@@ -137,6 +140,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         storage = SecureStorage(this)
+        scheduleTrashCleanup()
         if (storage.isPaired) {
             KeyManager(storage).getOrCreateMasterKey()
         }
@@ -164,9 +168,14 @@ class MainActivity : AppCompatActivity() {
         binding.btnToggleNode.setOnClickListener { onToggleNodeClicked() }
         binding.btnSyncNow.setOnClickListener { onSyncNowClicked() }
         binding.btnSubmitPair.setOnClickListener { onPairClicked() }
-        binding.btnBatteryPermission.setOnClickListener { requestIgnoreBatteryOptimizations() }
-        binding.btnStoragePermission.setOnClickListener { requestFullStorageAccess() }
+        binding.btnEditSystemPermissions.setOnClickListener {
+            startActivity(Intent(this, SystemPermissionsActivity::class.java))
+        }
+        binding.btnManageClientStorageAccess.setOnClickListener {
+            startActivity(Intent(this, ClientStorageAccessActivity::class.java))
+        }
         binding.btnShowMasterKey.setOnClickListener { onShowMasterKeyClicked() }
+        binding.btnRecycleBinCard.setOnClickListener { startActivity(Intent(this, RecycleBinActivity::class.java)) }
         binding.btnResetNode.setOnClickListener { onResetNodeClicked() }
 
         // Register broadcast receiver for node unlinked events
@@ -193,6 +202,15 @@ class MainActivity : AppCompatActivity() {
         refreshAll()
     }
 
+    private fun scheduleTrashCleanup() {
+        val request = PeriodicWorkRequestBuilder<TrashCleanupWorker>(1, TimeUnit.DAYS).build()
+        WorkManager.getInstance(applicationContext).enqueueUniquePeriodicWork(
+            "stashly_trash_cleanup",
+            ExistingPeriodicWorkPolicy.KEEP,
+            request,
+        )
+    }
+
     override fun onDestroy() {
         try {
             bleKeyShareServer?.stop()
@@ -209,6 +227,7 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         refreshAll()
+        StashlyWidgetProvider.updateAll(this)
         showPendingClientRemovedDialog()
     }
 
@@ -283,7 +302,6 @@ class MainActivity : AppCompatActivity() {
     private fun refreshAll() {
         refreshStorageMeter()
         refreshNodeStatus()
-        refreshPermissions()
         fetchLiveBrokerStatus()
     }
 
@@ -334,7 +352,6 @@ class MainActivity : AppCompatActivity() {
 
             binding.layoutPairedClientDetails.visibility = View.GONE
             binding.connectedClientsEmptyText.visibility = View.VISIBLE
-            binding.layoutClientAccessList.removeAllViews()
         } else {
             binding.layoutPairedClientDetails.visibility = View.VISIBLE
             binding.connectedClientsEmptyText.visibility = View.GONE
@@ -361,7 +378,6 @@ class MainActivity : AppCompatActivity() {
             // Display Connected Accounts Cards
             val cachedUsers = loadCachedConnectedUsers()
             renderConnectedAccounts(cachedUsers)
-            renderClientAccessList(cachedUsers)
         }
     }
 
@@ -570,69 +586,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun renderClientAccessList(users: List<ConnectedUser>) {
-        binding.layoutClientAccessList.removeAllViews()
-        val listToRender = users
-
-        for (user in listToRender) {
-            val row = android.widget.LinearLayout(this).apply {
-                orientation = android.widget.LinearLayout.VERTICAL
-                setPadding(12, 10, 12, 10)
-                setBackgroundColor(getColor(R.color.surface_subtle_light))
-                layoutParams = android.widget.LinearLayout.LayoutParams(
-                    android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
-                    android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
-                ).apply { bottomMargin = 8 }
-            }
-
-            row.addView(android.widget.TextView(this).apply {
-                text = user.email
-                setTextColor(getColor(R.color.text_primary_light))
-                textSize = 13f
-                setTypeface(typeface, android.graphics.Typeface.BOLD)
-            })
-
-            row.addView(android.widget.TextView(this).apply {
-                text = when (user.scope.mode) {
-                    "NONE" -> getString(R.string.user_access_scope_none)
-                    "CUSTOM_FILE" -> getString(R.string.user_access_scope_file, user.scope.name ?: user.scope.path ?: "Selected file")
-                    "CUSTOM_FOLDER" -> getString(R.string.user_access_scope_folder, user.scope.name ?: user.scope.path ?: "Selected folder")
-                    else -> getString(R.string.user_access_scope_all)
-                }
-                setTextColor(getColor(R.color.primary))
-                textSize = 12f
-                setPadding(0, 4, 0, 0)
-            })
-
-            val editToken = storage.deviceToken
-            if (editToken != null) {
-                row.addView(android.widget.Button(this).apply {
-                    text = getString(R.string.btn_change_client_access)
-                    setOnClickListener {
-                        pendingScopeIsPairing = false
-                        showAccessScopeDialog(
-                            PairingResult(
-                                deviceId = storage.deviceId ?: return@setOnClickListener,
-                                deviceToken = editToken,
-                                userId = user.userId,
-                                role = if (user.userId == storage.ownerUserId) "owner" else "viewer",
-                                userEmail = user.email
-                            )
-                        )
-                    }
-                })
-            } else {
-                row.addView(android.widget.TextView(this).apply {
-                    text = getString(R.string.client_access_managed)
-                    setTextColor(getColor(R.color.text_secondary_light))
-                    textSize = 11f
-                    setPadding(0, 4, 0, 0)
-                })
-            }
-            binding.layoutClientAccessList.addView(row)
-        }
-    }
-
     private fun fetchLiveBrokerStatus() {
         val brokerUrl = storage.brokerBaseUrl ?: return
         val deviceToken = storage.deviceToken ?: return
@@ -659,6 +612,7 @@ class MainActivity : AppCompatActivity() {
                         }
                     }.toString()
                     storage.connectedUsersJson = usersJson
+                    StashlyWidgetProvider.updateAll(this@MainActivity)
                     if (selfInfo.users.isNotEmpty() && storage.userEmail.isNullOrEmpty()) {
                         storage.userEmail = selfInfo.users.first().email
                     }
@@ -669,7 +623,6 @@ class MainActivity : AppCompatActivity() {
                         }
                     }
                     renderConnectedAccounts(selfInfo.users)
-                    renderClientAccessList(selfInfo.users)
                     if (selfInfo.isLive) {
                         storage.isLive = true
                     }
@@ -684,36 +637,6 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             }
-        }
-    }
-
-    private fun refreshPermissions() {
-        val pm = getSystemService(POWER_SERVICE) as PowerManager
-        val ignoringBattery = pm.isIgnoringBatteryOptimizations(packageName)
-        binding.batteryStatusText.text = getString(
-            if (ignoringBattery) R.string.battery_status_allowed else R.string.battery_status_active
-        )
-        binding.btnBatteryPermission.isEnabled = !ignoringBattery
-        if (ignoringBattery) binding.btnBatteryPermission.text = getString(R.string.btn_granted)
-
-        val hasAllFilesAccess = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            Environment.isExternalStorageManager()
-        } else {
-            true
-        }
-
-        binding.storageScopeStatusText.text = getString(
-            if (hasAllFilesAccess) R.string.device_file_access_allowed else R.string.device_file_access_not_allowed
-        )
-        binding.storagePermissionStatusText.text = getString(
-            if (hasAllFilesAccess) R.string.storage_full_access_desc else R.string.storage_limited_access_desc
-        )
-
-        binding.btnStoragePermission.isEnabled = !hasAllFilesAccess
-        if (hasAllFilesAccess) {
-            binding.btnStoragePermission.text = getString(R.string.btn_granted)
-        } else {
-            binding.btnStoragePermission.text = getString(R.string.btn_all_storage)
         }
     }
 
@@ -783,9 +706,15 @@ class MainActivity : AppCompatActivity() {
                 }
             })
         }
-        addOption(getString(R.string.scope_option_all)) { savePairingScope(pairing, AccessScope()) }
-        addOption(getString(R.string.scope_option_folder)) { beginFolderScopePicker(pairing) }
-        addOption(getString(R.string.scope_option_file)) { beginFileScopePicker(pairing) }
+        addOption(getString(R.string.scope_option_all)) {
+            withStorageAccess { savePairingScope(pairing, AccessScope()) }
+        }
+        addOption(getString(R.string.scope_option_folder)) {
+            withStorageAccess { beginFolderScopePicker(pairing) }
+        }
+        addOption(getString(R.string.scope_option_file)) {
+            withStorageAccess { beginFileScopePicker(pairing) }
+        }
 
         dialog = AlertDialog.Builder(this)
             .setTitle(getString(R.string.dialog_access_scope_title))
@@ -821,6 +750,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun savePairingScope(pairing: PairingResult, scope: AccessScope) {
+        if (!hasFullStorageAccess()) {
+            showStorageAccessRequired()
+            return
+        }
         val brokerUrl = storage.brokerBaseUrl ?: return
         val deviceToken = pairing.deviceToken
         val isPairing = pendingScopeIsPairing
@@ -848,6 +781,28 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this@MainActivity, getString(R.string.toast_access_scope_error, e.message ?: ""), Toast.LENGTH_LONG).show()
             }
         }
+    }
+
+    private fun hasFullStorageAccess(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.R || Environment.isExternalStorageManager()
+
+    private fun withStorageAccess(action: () -> Unit) {
+        if (hasFullStorageAccess()) action() else showStorageAccessRequired()
+    }
+
+    private fun showStorageAccessRequired() {
+        AlertDialog.Builder(this)
+            .setTitle("Device storage access required")
+            .setMessage("Allow Stashly full device storage access before assigning files or folders to a client.")
+            .setPositiveButton("Open settings") { _, _ ->
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    startActivity(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                        data = Uri.parse("package:$packageName")
+                    })
+                }
+            }
+            .setNegativeButton(getString(R.string.dialog_btn_cancel), null)
+            .show()
     }
 
     private fun onToggleNodeClicked() {
@@ -942,6 +897,13 @@ class MainActivity : AppCompatActivity() {
 
         if (brokerUrl.isEmpty() || deviceName.isEmpty() || pairingToken.isEmpty()) {
             Toast.makeText(this, getString(R.string.toast_fill_fields), Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        // Do not create a broker connection that cannot serve files. The
+        // storage permission must be granted before pairing begins.
+        if (!hasFullStorageAccess()) {
+            showStorageAccessRequired()
             return
         }
 
@@ -1043,25 +1005,6 @@ class MainActivity : AppCompatActivity() {
             storageTotalMb = toMb(stat.totalBytes),
             storageFreeMb = toMb(stat.availableBytes)
         )
-    }
-
-    @SuppressLint("BatteryLife")
-    private fun requestIgnoreBatteryOptimizations() {
-        val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-            data = "package:$packageName".toUri()
-        }
-        startActivity(intent)
-    }
-
-    private fun requestFullStorageAccess() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
-                data = "package:$packageName".toUri()
-            }
-            startActivity(intent)
-        } else {
-            Toast.makeText(this, getString(R.string.toast_storage_default), Toast.LENGTH_SHORT).show()
-        }
     }
 
     private fun onShowMasterKeyClicked() {

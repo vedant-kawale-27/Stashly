@@ -1,0 +1,127 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/widget_background"
+    android:gravity="center_vertical"
+    android:minHeight="0dp"
+    android:orientation="horizontal"
+    android:padding="10dp">
+
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:orientation="vertical">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@drawable/widget_storage_card"
+            android:orientation="vertical"
+            android:padding="10dp">
+
+            <ProgressBar
+                android:id="@+id/widgetStorageBar"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="match_parent"
+                android:layout_height="10dp"
+                android:max="100"
+                android:progress="0"
+                android:progressBackgroundTint="@color/widget_track"
+                android:progressTint="@color/widget_accent" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/widgetStorageUsed"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Used 0 MB"
+                    android:textColor="@color/widget_text_muted"
+                    android:textSize="10sp" />
+
+                <TextView
+                    android:id="@+id/widgetStorageFree"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:gravity="center"
+                    android:text="Free 0 MB"
+                    android:textColor="@color/widget_text_muted"
+                    android:textSize="10sp" />
+
+                <TextView
+                    android:id="@+id/widgetStorageTotal"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:gravity="end"
+                    android:text="Total 0 MB"
+                    android:textColor="@color/widget_text_muted"
+                    android:textSize="10sp" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/widgetNodeStatus"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="5dp"
+            android:text="Stashly · Not connected"
+            android:textColor="@color/widget_text"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/widgetClientSummary"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="0/0 online connected clients"
+            android:textColor="@color/widget_text_muted"
+            android:textSize="10sp" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="58dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="10dp"
+        android:gravity="center"
+        android:orientation="vertical">
+
+        <Button
+            android:id="@+id/widgetToggleButton"
+            style="@style/Widget.MaterialComponents.Button.TextButton"
+            android:layout_width="58dp"
+            android:layout_height="36dp"
+            android:background="@drawable/widget_button_background"
+            android:backgroundTint="@null"
+            android:minWidth="0dp"
+            android:paddingHorizontal="2dp"
+            android:text="Start"
+            android:textAllCaps="false"
+            android:textColor="@color/widget_accent"
+            android:textSize="10sp" />
+
+        <Button
+            android:id="@+id/widgetSyncButton"
+            style="@style/Widget.MaterialComponents.Button.TextButton"
+            android:layout_width="58dp"
+            android:layout_height="36dp"
+            android:layout_marginTop="6dp"
+            android:background="@drawable/widget_button_background"
+            android:backgroundTint="@null"
+            android:minWidth="0dp"
+            android:paddingHorizontal="2dp"
+            android:text="Sync"
+            android:textAllCaps="false"
+            android:textColor="@color/widget_accent"
+            android:textSize="10sp" />
+    </LinearLayout>
+</LinearLayout>

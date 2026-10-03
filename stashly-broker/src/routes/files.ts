@@ -14,7 +14,6 @@ import { prisma } from "../db";
 import { AuthedRequest, requireAuth } from "../middleware";
 import { deviceHub } from "../ws/deviceHub";
 import { isPathAllowed } from "../access";
-import { v4 as uuid } from "uuid";
 
 export const filesRouter = Router();
 
@@ -65,8 +64,34 @@ filesRouter.get("/", requireAuth, async (req: AuthedRequest, res) => {
     }).map((f) => ({
       ...f,
       deviceOnline: deviceHub.isOnline(f.deviceId),
+      // Thumbnails are generated on-demand by Android for image/video files
+      hasThumbnail: (f.mimeType?.startsWith("image/") || f.mimeType?.startsWith("video/")) && deviceHub.isOnline(f.deviceId),
+      encryptionFormat: (f as any).encryptionFormat ?? "single",
     }))
   );
+});
+
+// GET /files/:id/thumbnail — request encrypted thumbnail live from the Android device
+filesRouter.get("/:id/thumbnail", requireAuth, async (req: AuthedRequest, res) => {
+  const file = await prisma.fileEntry.findUnique({ where: { id: req.params.id } });
+  if (!file) return res.status(404).json({ error: "File not found" });
+
+  const link = await assertCanAccessDevice(req.user!.userId, file.deviceId);
+  if (!link || !isPathAllowed(file.path, link)) return res.status(404).json({ error: "File not accessible" });
+
+  if (!deviceHub.isOnline(file.deviceId)) {
+    return res.status(503).json({ error: "Device offline — thumbnail unavailable" });
+  }
+
+  try {
+    const thumbData = await deviceHub.requestThumbnail(file.deviceId, file.path);
+    res.setHeader("Content-Type", "application/octet-stream");
+    res.setHeader("X-Encrypted-Dek", file.encryptedDek);
+    res.setHeader("Cache-Control", "no-store"); // don't HTTP-cache — thumbnails must be inaccessible when device goes offline
+    return res.send(thumbData);
+  } catch {
+    return res.status(504).json({ error: "Thumbnail not available from device" });
+  }
 });
 
 // Start a chunked upload. Chunks are opaque ciphertext and are never decrypted by the broker.
@@ -251,6 +276,8 @@ filesRouter.patch("/:id", requireAuth, async (req: AuthedRequest, res) => {
 });
 
 // GET /files/:id/download — fetch ciphertext, live from the phone.
+// ?stream=chunked → stream in 1MB chunks (broker never buffers full file)
+// default → legacy full-file fetch (backward compatible)
 filesRouter.get("/:id/download", requireAuth, async (req: AuthedRequest, res) => {
   const file = await prisma.fileEntry.findUnique({ where: { id: req.params.id } });
   if (!file) return res.status(404).json({ error: "File not found" });
@@ -268,39 +295,144 @@ filesRouter.get("/:id/download", requireAuth, async (req: AuthedRequest, res) =>
     });
   }
 
-  try {
-    const ciphertext = await deviceHub.requestFile(file.deviceId, file.path);
+  const useChunked = req.query.stream === "chunked";
 
-    // Save to local filesystem storage cache for faster repeated access
-    const cacheFilename = `${file.id}.bin`;
-    const cacheFilePath = path.join(config.storageDir, cacheFilename);
-    try {
-      await fs.promises.writeFile(cacheFilePath, ciphertext);
-      await prisma.fileEntry.update({
-        where: { id: file.id },
-        data: {
-          lastAccessAt: new Date(),
-          isCached: true,
-          cacheKey: cacheFilename,
-          cachedAt: new Date(),
-        },
-      });
-    } catch (cacheErr) {
-      console.warn("Failed to write to local storage cache:", cacheErr);
+  if (useChunked) {
+    // ── Chunked streaming mode ──
+    // Each chunk is independently AES-GCM encrypted by the Android device.
+    // Response format: [4-byte big-endian chunk length][encrypted chunk bytes]...
+    //                  [0x00000000] (end marker)
+    const CHUNK_SIZE = 1024 * 1024; // 1 MB plaintext per chunk
+    const totalSize = file.sizeBytes;
+    const totalChunks = Math.ceil(totalSize / CHUNK_SIZE);
+    let firstChunk = 0;
+    let lastChunk = Math.max(0, totalChunks - 1);
+
+    const rangeHeader = req.headers.range;
+    if (typeof rangeHeader === "string") {
+      const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader.trim());
+      if (!match || (!match[1] && !match[2])) {
+        return res.status(416).setHeader("Content-Range", `bytes */${totalSize}`).json({ error: "Invalid byte range" });
+      }
+      const requestedStart = match[1] ? Number(match[1]) : Math.max(0, totalSize - Number(match[2]));
+      const requestedEnd = match[2] ? Number(match[2]) : totalSize - 1;
+      if (!Number.isSafeInteger(requestedStart) || !Number.isSafeInteger(requestedEnd) ||
+          requestedStart < 0 || requestedStart >= totalSize || requestedStart > requestedEnd) {
+        return res.status(416).setHeader("Content-Range", `bytes */${totalSize}`).json({ error: "Requested range is not satisfiable" });
+      }
+      const end = Math.min(requestedEnd, totalSize - 1);
+      firstChunk = Math.floor(requestedStart / CHUNK_SIZE);
+      lastChunk = Math.floor(end / CHUNK_SIZE);
+      res.status(206);
+      // AES-GCM authenticates complete chunks. The response therefore contains
+      // complete encrypted chunks covering the requested range, not a partial
+      // ciphertext fragment. The web client slices plaintext after decrypting.
+      res.setHeader("X-Stashly-Range-Start", String(requestedStart));
+      res.setHeader("X-Stashly-Range-End", String(end));
     }
 
-    res.setHeader("Content-Type", "application/octet-stream");
+    res.setHeader("Content-Type", "application/x-stashly-chunked");
     res.setHeader("X-Encrypted-Dek", file.encryptedDek);
-    return res.send(ciphertext);
-  } catch (err: any) {
-    if (err.message !== "DEVICE_TIMEOUT" && err.message !== "DEVICE_OFFLINE") {
-      throw err;
-    }
-    return res.status(503).json({
-      error: "The Android node did not respond and file sharing is stopped",
-      code: "DEVICE_TIMEOUT_NO_CACHE",
-      deviceOnline: false,
+    res.setHeader("X-Chunk-Size", String(CHUNK_SIZE));
+    res.setHeader("X-Total-Chunks", String(totalChunks));
+    res.setHeader("X-Total-Plaintext-Size", String(totalSize));
+    res.setHeader("X-Chunk-First", String(firstChunk));
+    res.setHeader("X-Chunk-Last", String(lastChunk));
+    res.setHeader("Transfer-Encoding", "chunked");
+
+    // Stop requesting chunks from Android if the browser disconnects.
+    const abortController = new AbortController();
+    let finished = false;
+    res.on("close", () => {
+      if (!finished) abortController.abort();
     });
+
+    const writeWithBackpressure = async (data: Buffer) => {
+      if (!res.write(data)) {
+        await new Promise<void>((resolve) => res.once("drain", resolve));
+      }
+    };
+
+    try {
+      for (let i = firstChunk; i <= lastChunk; i++) {
+        if (abortController.signal.aborted) throw new Error("REQUEST_CANCELLED");
+
+        const offset = i * CHUNK_SIZE;
+        const length = Math.min(CHUNK_SIZE, totalSize - offset);
+        const encryptedChunk = await deviceHub.requestChunk(
+          file.deviceId,
+          file.path,
+          offset,
+          length,
+          abortController.signal,
+        );
+
+        if (abortController.signal.aborted) throw new Error("REQUEST_CANCELLED");
+
+        // Write 4-byte big-endian length prefix + encrypted chunk
+        const lengthBuf = Buffer.alloc(4);
+        lengthBuf.writeUInt32BE(encryptedChunk.length, 0);
+        await writeWithBackpressure(lengthBuf);
+        await writeWithBackpressure(encryptedChunk);
+      }
+
+      if (abortController.signal.aborted) throw new Error("REQUEST_CANCELLED");
+      // End marker
+      await writeWithBackpressure(Buffer.alloc(4, 0));
+      finished = true;
+      res.end();
+    } catch (err: any) {
+      if (err?.message === "REQUEST_CANCELLED" || abortController.signal.aborted) {
+        if (!res.writableEnded) res.destroy();
+        return;
+      }
+      // If we've already started writing, we can't send a JSON error
+      if (res.headersSent) {
+        res.end();
+        return;
+      }
+      const offline = err?.message === "DEVICE_OFFLINE" || err?.message === "DEVICE_TIMEOUT";
+      return res.status(offline ? 503 : 504).json({
+        error: offline ? "The Android node is offline" : (err?.message ?? "Chunk transfer failed"),
+        code: offline ? "DEVICE_OFFLINE" : "DEVICE_TIMEOUT",
+      });
+    }
+  } else {
+    // ── Legacy full-file mode ──
+    try {
+      const ciphertext = await deviceHub.requestFile(file.deviceId, file.path);
+
+      // Save to local filesystem storage cache for faster repeated access
+      const cacheFilename = `${file.id}.bin`;
+      const cacheFilePath = path.join(config.storageDir, cacheFilename);
+      try {
+        await fs.promises.writeFile(cacheFilePath, ciphertext);
+        await prisma.fileEntry.update({
+          where: { id: file.id },
+          data: {
+            lastAccessAt: new Date(),
+            isCached: true,
+            cacheKey: cacheFilename,
+            cachedAt: new Date(),
+          },
+        });
+      } catch (cacheErr) {
+        console.warn("Failed to write to local storage cache:", cacheErr);
+      }
+
+      res.setHeader("Content-Type", "application/octet-stream");
+      res.setHeader("X-Encrypted-Dek", file.encryptedDek);
+      return res.send(ciphertext);
+    } catch (err: any) {
+      if (err.message !== "DEVICE_TIMEOUT" && err.message !== "DEVICE_OFFLINE") {
+        throw err;
+      }
+      return res.status(503).json({
+        error: "The Android node did not respond and file sharing is stopped",
+        code: "DEVICE_TIMEOUT_NO_CACHE",
+        deviceOnline: false,
+      });
+    }
   }
 });
 

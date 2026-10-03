@@ -30,7 +30,6 @@ export function DevicePicker({ client, selectedDeviceId, onSelectDevice, onDevic
 
   return (
     <label className="file-device-picker">
-      <span>Storage location</span>
       <select value={selectedDeviceId ?? ""} onChange={(event) => onSelectDevice(event.target.value || null)}>
         <option value="">Select a device</option>
         {devices.map((device) => (

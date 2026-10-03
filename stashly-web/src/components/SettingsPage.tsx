@@ -1,6 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
 import { BrokerClient } from "../api";
-import { enableNotifications } from "../notifications";
 
 interface Props {
   client: BrokerClient;
@@ -20,9 +19,6 @@ export function SettingsPage({ client, email, onLogout, onClearLocalKeyData }: P
   const [mfaSecret, setMfaSecret] = useState("");
   const [mfaCode, setMfaCode] = useState("");
   useEffect(() => { void client.mfaStatus().then(setMfaEnabled).catch(() => {}); }, [client]);
-  const [notificationStatus, setNotificationStatus] = useState<NotificationPermission | "unsupported">(
-    "Notification" in window ? Notification.permission : "unsupported",
-  );
 
   async function handlePasswordChange(event: FormEvent) {
     event.preventDefault();
@@ -62,10 +58,6 @@ export function SettingsPage({ client, email, onLogout, onClearLocalKeyData }: P
   async function disableMfa() {
     try { await client.disableMfa(mfaCode); setMfaEnabled(false); setMfaCode(""); setMessage("MFA disabled."); }
     catch (err: any) { setError(err.message ?? "Invalid authenticator code."); }
-  }
-
-  async function configureNotifications() {
-    setNotificationStatus(await enableNotifications());
   }
 
   return (
@@ -109,13 +101,6 @@ export function SettingsPage({ client, email, onLogout, onClearLocalKeyData }: P
           <button className="btn-secondary danger-button" onClick={() => void clearBrowserData()}>Clear saved keys and cache</button>
         </section>
 
-        <section className="settings-card">
-          <div className="settings-card-heading"><span className="settings-icon">!</span><div><h2>Notifications</h2><p>Optional browser alerts</p></div></div>
-          <p className="settings-copy">Allow Stashly to confirm when an encrypted download has been cached for offline use. No file contents are included.</p>
-          <button className="btn-secondary" onClick={() => void configureNotifications()} disabled={notificationStatus === "granted" || notificationStatus === "unsupported"}>
-            {notificationStatus === "granted" ? "Notifications enabled" : notificationStatus === "denied" ? "Notifications blocked" : "Enable notifications"}
-          </button>
-        </section>
       </div>
     </div>
   );

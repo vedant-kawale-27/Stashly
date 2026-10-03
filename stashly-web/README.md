@@ -8,11 +8,13 @@ The web client operates entirely under a zero-trust model: encrypted ciphertexts
 
 - QR and manual device pairing with device selection and live presence
 - File browsing, previews, downloads, uploads, and scoped access controls
+- Metadata-first browsing, encrypted thumbnails, and progressive image previews
+- Chunked large-file downloads with binary encrypted frames and chunk-aligned ranges
 - Per-device master-key storage in local browser storage, with optional
   Bluetooth transfer from the Android node on supported browsers
 - Encrypted IndexedDB offline downloads containing ciphertext and wrapped DEKs
 - Share-link creation/revocation, password changes, authenticator-app MFA,
-  browser notifications, dark mode, and local security-data clearing
+  dark mode and local security-data clearing
 - Installable PWA assets and responsive desktop/mobile layouts
 
 ---
@@ -49,6 +51,14 @@ The web client implements the exact cryptographic counterpart to the Android app
    - The DEK is imported as an AES-GCM CryptoKey.
    - The ciphertext is decrypted using `crypto.subtle.decrypt({ name: "AES-GCM", iv, tagLength: 128 }, key, ciphertext)`.
    - The decrypted `ArrayBuffer` is wrapped into a browser `Blob` matching the file's MIME type and saved or opened via an object URL (`URL.createObjectURL(blob)`).
+
+4. **Chunked Decryption (`decryptChunkedFile`)**:
+   - Large-file responses contain a count followed by length-prefixed encrypted
+     chunks.
+   - Each chunk has its own IV and GCM authentication tag and is authenticated
+     before being joined for a preview.
+   - Direct downloads can use the File System Access API to decrypt and write
+     one chunk at a time, avoiding a full-file browser buffer.
 
 ---
 
@@ -89,13 +99,13 @@ The web client implements the exact cryptographic counterpart to the Android app
 
 ### 8. Device, settings, and offline features
 - `DevicePicker.tsx` keeps file operations tied to an explicitly selected node.
-- `SettingsPage.tsx` manages passwords, TOTP MFA, notifications, and clearing
+- `SettingsPage.tsx` manages passwords, TOTP MFA, and local-data clearing
   locally stored keys/ciphertext.
 - `BluetoothKeyModal.tsx` uses Web Bluetooth to receive a master key from the
   Android node when the browser and device support the protocol.
 - `offlineCache.ts` stores broker ciphertext and wrapped DEKs in IndexedDB;
   plaintext is produced only for an explicit preview or download.
-- `notifications.ts`, `public/manifest.webmanifest`, and `public/sw.js`
+- `public/manifest.webmanifest` and `public/sw.js`
   provide optional browser alerts and installable PWA support.
 
 ---
@@ -107,6 +117,11 @@ The `BrokerClient` class encapsulates all communication with the broker server:
 - **Authentication Headers**: Injects `Authorization: Bearer <token>` automatically on authenticated requests.
 - **Header Parsing**: Extracts `X-Encrypted-Dek` and `X-From-Local-Cache` from download responses.
 - **Error Normalization**: Maps HTTP status codes (e.g., 401, 404, 503) and broker error codes (`DEVICE_OFFLINE_NO_CACHE`, `DEVICE_TIMEOUT_NO_CACHE`) to structured `ApiError` instances.
+- **Chunk Streaming**: `streamDownloadChunked()` parses framed encrypted chunks
+  as they arrive and can pass each chunk to a local file sink. The browser
+  validates the end marker and chunk boundaries before accepting the stream.
+- **Live Thumbnails**: Thumbnail responses are decrypted in memory and are not
+  persisted as plaintext browser data.
 
 ---
 

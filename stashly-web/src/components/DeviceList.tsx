@@ -35,6 +35,39 @@ function scopeLabel(user: NonNullable<Device["sharedWith"]>[number]): string {
   return "No file access selected";
 }
 
+const deviceListCache = new Map<string, Device[]>();
+
+function sameDevice(left: Device, right: Device): boolean {
+  return left.id === right.id &&
+    left.name === right.name &&
+    left.platform === right.platform &&
+    left.osVersion === right.osVersion &&
+    left.appVersion === right.appVersion &&
+    left.modelName === right.modelName &&
+    left.modelNumber === right.modelNumber &&
+    left.androidVersion === right.androidVersion &&
+    left.batteryLevel === right.batteryLevel &&
+    left.storageTotalMb === right.storageTotalMb &&
+    left.storageFreeMb === right.storageFreeMb &&
+    left.status === right.status &&
+    left.storageQuotaMb === right.storageQuotaMb &&
+    left.lastSeenAt === right.lastSeenAt &&
+    left.fileCount === right.fileCount &&
+    left.sharingEnabled === right.sharingEnabled &&
+    JSON.stringify(left.sharedWith ?? []) === JSON.stringify(right.sharedWith ?? []);
+}
+
+function reconcileDevices(previous: Device[], next: Device[]): Device[] {
+  const previousById = new Map(previous.map((device) => [device.id, device]));
+  const reconciled = next.map((device) => {
+    const existing = previousById.get(device.id);
+    return existing && sameDevice(existing, device) ? existing : device;
+  });
+  return reconciled.length === previous.length && reconciled.every((device, index) => device === previous[index])
+    ? previous
+    : reconciled;
+}
+
 interface Props {
   client: BrokerClient;
   brokerUrl: string;
@@ -56,8 +89,9 @@ export function DeviceList({
   onMasterKeyChange,
   onClearLocalKeyData,
 }: Props) {
-  const [devices, setDevices] = useState<Device[]>([]);
-  const [loading, setLoading] = useState(true);
+  const cacheKey = `${brokerUrl}:${token}`;
+  const [devices, setDevices] = useState<Device[]>(() => deviceListCache.get(cacheKey) ?? []);
+  const [loading, setLoading] = useState(() => !deviceListCache.has(cacheKey));
   const [error, setError] = useState<string | null>(null);
   const [mountDevice, setMountDevice] = useState<Device | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -67,8 +101,11 @@ export function DeviceList({
   const [keyMessage, setKeyMessage] = useState<Record<string, string>>({});
   const [bluetoothDevice, setBluetoothDevice] = useState<Device | null>(null);
   const [keyManagerDevice, setKeyManagerDevice] = useState<Device | null>(null);
+  const loadingRef = React.useRef(false);
 
   async function loadDevices(force = false, syncFiles = false) {
+    if (loadingRef.current) return;
+    loadingRef.current = true;
     try {
       setError(null);
       let list = await client.listDevices(force);
@@ -76,7 +113,11 @@ export function DeviceList({
         await Promise.all(list.filter((device) => device.status === "online").map((device) => client.syncDevice(device.id).catch(() => undefined)));
         list = await client.listDevices(true);
       }
-      setDevices(list);
+      setDevices((previous) => {
+        const reconciled = reconcileDevices(previous, list);
+        deviceListCache.set(cacheKey, reconciled);
+        return reconciled;
+      });
       if (!selectedDeviceId && list.length > 0) {
         onSelectDevice(list[0].id);
       }
@@ -84,12 +125,12 @@ export function DeviceList({
       setError(err.message || "Failed to load nodes");
     } finally {
       setLoading(false);
+      loadingRef.current = false;
     }
   }
 
   useEffect(() => {
-    loadDevices();
-    void loadDevices(true);
+    void loadDevices(false);
     const interval = setInterval(() => loadDevices(true), 6000);
     return () => clearInterval(interval);
   }, []);

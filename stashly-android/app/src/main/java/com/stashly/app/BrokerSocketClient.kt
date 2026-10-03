@@ -16,9 +16,12 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import okio.ByteString
+import okio.ByteString.Companion.toByteString
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.min
 import kotlin.math.pow
 
@@ -53,6 +56,7 @@ class BrokerSocketClient(
     private var socket: WebSocket? = null
     private var reconnectAttempt = 0
     private var stopped = false
+    private val cancelledRequests = ConcurrentHashMap.newKeySet<String>()
 
     private fun sendDeviceHello(targetSocket: WebSocket) {
         val stat = android.os.StatFs(android.os.Environment.getExternalStorageDirectory().path)
@@ -103,6 +107,7 @@ class BrokerSocketClient(
                         put("contentHash", e.contentHash)
                         put("mimeType", e.mimeType)
                         put("encryptedDek", e.encryptedDek)
+                        // thumbnailBase64 is NOT sent during sync — thumbnails are requested on-demand
                     }
                 )
             }
@@ -189,6 +194,9 @@ class BrokerSocketClient(
                     onNodeRemoved(reason)
                 }
                 "fetch_request" -> handleFetchRequest(msg)
+                "fetch_chunk" -> handleFetchChunk(msg)
+                "thumbnail_request" -> handleThumbnailRequest(msg)
+                "cancel_request" -> cancelledRequests.add(msg.optString("requestId"))
                 "upload_request" -> handleUploadRequest(msg)
                 "sync_request" -> handleSyncRequest(msg)
                 "delete_request" -> handleDeleteRequest(msg)
@@ -248,6 +256,93 @@ class BrokerSocketClient(
             reply.put("error", e.message ?: "Failed to read file on device")
         }
         send(reply)
+    }
+
+    /**
+     * Handles chunked file fetch requests from the broker. Reads a specific
+     * byte range from the file, encrypts it independently, and sends the
+     * result as a binary WebSocket frame to avoid base64 overhead.
+     *
+     * Binary frame format: [36-byte requestId UTF-8][1-byte type (0x01=chunk)][1-byte status (1=ok, 0=error)][encrypted chunk bytes]
+     */
+    private fun handleFetchChunk(msg: JSONObject) {
+        val requestId = msg.getString("requestId")
+        if (cancelledRequests.remove(requestId)) return
+        val path = msg.getString("path")
+        val offset = msg.optLong("offset", 0)
+        val length = msg.optInt("length", 1024 * 1024)
+
+        try {
+            val encryptedChunk = fileVault.getChunkCiphertext(path, offset, length)
+            if (cancelledRequests.remove(requestId)) return
+            val requestIdBytes = requestId.toByteArray(Charsets.UTF_8)
+            if (encryptedChunk != null) {
+                // Build binary frame: [36-byte requestId][0x01 = chunk type][0x01 = ok][encrypted data]
+                val frame = ByteArray(38 + encryptedChunk.size)
+                System.arraycopy(requestIdBytes, 0, frame, 0, minOf(requestIdBytes.size, 36))
+                frame[36] = 1 // type: chunk
+                frame[37] = 1 // status: ok
+                System.arraycopy(encryptedChunk, 0, frame, 38, encryptedChunk.size)
+                socket?.send(frame.toByteString())
+            } else {
+                // Send error frame: [36-byte requestId][0x01 = chunk type][0x00 = error]
+                val frame = ByteArray(38)
+                System.arraycopy(requestIdBytes, 0, frame, 0, minOf(requestIdBytes.size, 36))
+                frame[36] = 1 // type: chunk
+                frame[37] = 0 // status: error
+                socket?.send(frame.toByteString())
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Chunk fetch failed for $path offset=$offset", e)
+            val requestIdBytes = requestId.toByteArray(Charsets.UTF_8)
+            val frame = ByteArray(38)
+            System.arraycopy(requestIdBytes, 0, frame, 0, minOf(requestIdBytes.size, 36))
+            frame[36] = 1 // type: chunk
+            frame[37] = 0 // status: error
+            socket?.send(frame.toByteString())
+        }
+    }
+
+    /**
+     * Handles on-demand thumbnail requests from the broker. Generates the thumbnail,
+     * encrypts it with the file's DEK, and sends as a binary WS frame.
+     *
+     * Binary frame format: [36-byte requestId UTF-8][1-byte type (0x02=thumbnail)][1-byte status (1=ok, 0=error)][encrypted thumbnail]
+     */
+    private fun handleThumbnailRequest(msg: JSONObject) {
+        val requestId = msg.getString("requestId")
+        if (cancelledRequests.remove(requestId)) return
+        val path = msg.getString("path")
+
+        try {
+            val encryptedThumb = fileVault.getEncryptedThumbnail(path)
+            if (cancelledRequests.remove(requestId)) return
+            val requestIdBytes = requestId.toByteArray(Charsets.UTF_8)
+            if (encryptedThumb != null) {
+                // Build binary frame: [36-byte requestId][0x02 = thumbnail type][0x01 = ok][encrypted thumb]
+                val frame = ByteArray(38 + encryptedThumb.size)
+                System.arraycopy(requestIdBytes, 0, frame, 0, minOf(requestIdBytes.size, 36))
+                frame[36] = 2 // type: thumbnail
+                frame[37] = 1 // status: ok
+                System.arraycopy(encryptedThumb, 0, frame, 38, encryptedThumb.size)
+                socket?.send(frame.toByteString())
+            } else {
+                // Send error frame
+                val frame = ByteArray(38)
+                System.arraycopy(requestIdBytes, 0, frame, 0, minOf(requestIdBytes.size, 36))
+                frame[36] = 2 // type: thumbnail
+                frame[37] = 0 // status: error
+                socket?.send(frame.toByteString())
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Thumbnail generation failed for $path", e)
+            val requestIdBytes = requestId.toByteArray(Charsets.UTF_8)
+            val frame = ByteArray(38)
+            System.arraycopy(requestIdBytes, 0, frame, 0, minOf(requestIdBytes.size, 36))
+            frame[36] = 2 // type: thumbnail
+            frame[37] = 0 // status: error
+            socket?.send(frame.toByteString())
+        }
     }
 
     private fun handleUploadRequest(msg: JSONObject) {

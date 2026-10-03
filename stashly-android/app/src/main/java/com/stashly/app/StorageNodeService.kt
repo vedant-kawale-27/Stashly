@@ -17,7 +17,10 @@ import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.Network
 import android.os.IBinder
+import android.os.Handler
+import android.os.Looper
 import androidx.core.app.NotificationCompat
+import org.json.JSONArray
 
 /**
  * The always-running piece: keeps one persistent WebSocket connection to the
@@ -28,9 +31,17 @@ import androidx.core.app.NotificationCompat
 class StorageNodeService : Service() {
 
     private lateinit var socketClient: BrokerSocketClient
+    private lateinit var fileVault: FileVault
     private lateinit var connectivityManager: ConnectivityManager
     private lateinit var storage: SecureStorage
     private var currentState: BrokerSocketClient.State = BrokerSocketClient.State.CONNECTING
+    private val maintenanceHandler = Handler(Looper.getMainLooper())
+    private val trashCleanup = object : Runnable {
+        override fun run() {
+            if (::fileVault.isInitialized) fileVault.purgeExpiredTrash()
+            maintenanceHandler.postDelayed(this, 24L * 60 * 60 * 1000)
+        }
+    }
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
@@ -42,7 +53,9 @@ class StorageNodeService : Service() {
         super.onCreate()
         storage = SecureStorage(this)
         val keyManager = KeyManager(storage)
-        val fileVault = FileVault(this, keyManager, storage)
+        fileVault = FileVault(this, keyManager, storage)
+        // Keep the local recycle bin bounded even when the UI is not opened.
+        fileVault.purgeExpiredTrash()
 
         socketClient = BrokerSocketClient(
             context = this,
@@ -61,6 +74,7 @@ class StorageNodeService : Service() {
 
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification(currentState))
+        maintenanceHandler.postDelayed(trashCleanup, 24L * 60 * 60 * 1000)
         socketClient.start()
     }
 
@@ -86,6 +100,7 @@ class StorageNodeService : Service() {
 
     private fun handleClientRemoved(userId: String) {
         storage.pendingClientRemovedUserId = userId
+        updateCachedClientPresence(userId, removed = true)
         sendBroadcast(Intent(ACTION_CLIENT_UNLINKED).apply {
             setPackage(packageName)
             putExtra(EXTRA_CLIENT_USER_ID, userId)
@@ -93,11 +108,29 @@ class StorageNodeService : Service() {
     }
 
     private fun handleClientPresence(userId: String, online: Boolean) {
+        updateCachedClientPresence(userId, online = online)
         sendBroadcast(Intent(ACTION_CLIENT_PRESENCE).apply {
             setPackage(packageName)
             putExtra(EXTRA_CLIENT_USER_ID, userId)
             putExtra(EXTRA_CLIENT_ONLINE, online)
         })
+    }
+
+    private fun updateCachedClientPresence(userId: String, online: Boolean = false, removed: Boolean = false) {
+        runCatching {
+            val users = JSONArray(storage.connectedUsersJson ?: "[]")
+            val updated = JSONArray()
+            for (index in 0 until users.length()) {
+                val user = users.getJSONObject(index)
+                if (user.optString("userId") == userId) {
+                    if (removed) continue
+                    user.put("isLive", online)
+                }
+                updated.put(user)
+            }
+            storage.connectedUsersJson = updated.toString()
+            StashlyWidgetProvider.updateAll(this)
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -112,6 +145,7 @@ class StorageNodeService : Service() {
                 }
             }
         }
+        StashlyWidgetProvider.updateAll(this)
         return START_STICKY
     }
 
@@ -132,6 +166,7 @@ class StorageNodeService : Service() {
     }
 
     override fun onDestroy() {
+        maintenanceHandler.removeCallbacks(trashCleanup)
         if (::storage.isInitialized) {
             storage.isLive = false
             storage.lastLiveTimestamp = System.currentTimeMillis()
@@ -147,6 +182,7 @@ class StorageNodeService : Service() {
         stopForeground(STOP_FOREGROUND_REMOVE)
         val manager = getSystemService(NotificationManager::class.java)
         manager.cancel(NOTIFICATION_ID)
+        StashlyWidgetProvider.updateAll(this)
         super.onDestroy()
     }
 
@@ -160,6 +196,7 @@ class StorageNodeService : Service() {
             if (isOnline) {
                 storage.lastLiveTimestamp = System.currentTimeMillis()
             }
+            StashlyWidgetProvider.updateAll(this)
         }
         val manager = getSystemService(NotificationManager::class.java)
         manager.notify(NOTIFICATION_ID, buildNotification(state))

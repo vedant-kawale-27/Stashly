@@ -3,7 +3,6 @@ import { Navigate, NavLink, Route, Routes, useNavigate } from "react-router-dom"
 import { BrokerClient, clearBrowserApiCache, Device } from "./api";
 import { AuthModal } from "./components/AuthModal";
 import { DeviceList } from "./components/DeviceList";
-import { DevicePicker } from "./components/DevicePicker";
 import { FileBrowser } from "./components/FileBrowser";
 import { LandingPage } from "./components/LandingPage";
 import { PairingPanel } from "./components/PairingPanel";
@@ -32,6 +31,19 @@ export default function App() {
   useEffect(() => { token ? localStorage.setItem(KEYS.token, token) : localStorage.removeItem(KEYS.token); }, [token]);
   useEffect(() => { email ? localStorage.setItem(KEYS.email, email) : localStorage.removeItem(KEYS.email); }, [email]);
   useEffect(() => { localStorage.setItem(KEYS.masters, JSON.stringify(masterKeys)); }, [masterKeys]);
+  useEffect(() => {
+    if (!token) return;
+    let active = true;
+    const deviceClient = new BrokerClient(BROKER, token);
+    deviceClient.listDevices(true).then((list) => {
+      if (!active) return;
+      setDevices(list);
+      setDeviceId((current) => current && list.some((device) => device.id === current) ? current : (list[0]?.id ?? null));
+    }).catch(() => {
+      if (active) setDevices([]);
+    });
+    return () => { active = false; };
+  }, [token]);
   useEffect(() => {
     if (!token) return;
     const presence = new BrokerClient(BROKER, token);
@@ -92,7 +104,7 @@ export default function App() {
     </div></header>
     <main className="workspace-shell">
       <Routes>
-        <Route path="/files" element={<div className="page-view"><div className="page-heading"><div><span className="eyebrow">Storage</span><h1>Files</h1><p>Browse and manage files from your connected phone.</p></div><DevicePicker client={client} selectedDeviceId={deviceId} onSelectDevice={setDeviceId} onDevicesChange={setDevices} /></div><FileBrowser client={client} deviceId={deviceId} onSelectDevice={setDeviceId} devices={devices} masterKey={masterKey} /></div>} />
+        <Route path="/files" element={<div className="page-view"><FileBrowser client={client} deviceId={deviceId} onSelectDevice={setDeviceId} devices={devices} masterKey={masterKey} /></div>} />
         <Route path="/devices" element={<div className="page-view"><div className="page-heading"><div><span className="eyebrow">Connections</span><h1>Devices</h1><p>Pair phones, manage access, and check connection status.</p></div></div><PairingPanel client={client} /><DeviceList client={client} brokerUrl={BROKER} token={token} selectedDeviceId={deviceId} onSelectDevice={setDeviceId} masterKeys={masterKeys} onMasterKeyChange={(id, key) => setMasterKeys((old) => ({ ...old, [id]: key }))} onClearLocalKeyData={clearLocalKeyData} /></div>} />
         <Route path="/settings" element={<SettingsPage client={client} email={email} onLogout={logout} onClearLocalKeyData={clearLocalKeyData} />} />
         <Route path="*" element={<Navigate to="/files" replace />} />
