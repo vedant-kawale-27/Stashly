@@ -32,7 +32,12 @@ import java.security.interfaces.ECPublicKey
 import java.security.spec.ECGenParameterSpec
 import java.security.spec.X509EncodedKeySpec
 import java.security.KeyFactory
+import java.security.SecureRandom
+import javax.crypto.Cipher
+import javax.crypto.Mac
 import javax.crypto.KeyAgreement
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.SecretKeySpec
 
 /**
  * BLE GATT Server for securely sharing the master key with a web client
@@ -44,13 +49,12 @@ import javax.crypto.KeyAgreement
  *   3. Web client writes its own ECDH public key to the same characteristic
  *   4. Both sides derive a shared secret and display a 6-digit confirmation PIN
  *   5. User confirms PIN match; web client writes 0x01 to PIN confirm characteristic
- *   6. Web client reads the master key from the encrypted key characteristic
- *      (transmitted as raw Base64 text over the ECDH-secured BLE channel)
+ *   6. Web client reads the AES-GCM encrypted master key from the key characteristic
  *   7. Android stops advertising and closes the GATT server
  *
  * Security notes:
  *   - The BLE channel itself provides proximity-based security (physical range ~10m)
- *   - ECDH P-256 key agreement ensures the shared secret cannot be intercepted
+ *   - ECDH P-256 plus a separate HKDF-derived AES-GCM key protects the payload
  *   - The 6-digit PIN confirmation prevents MITM attacks
  *   - The master key is only shared after explicit user confirmation on both sides
  */
@@ -84,6 +88,7 @@ class BleKeyShareServer(
     private var gattServer: BluetoothGattServer? = null
     private var ecdhKeyPair: KeyPair? = null
     private var sharedSecret: ByteArray? = null
+    private var encryptedKeyPayload: ByteArray? = null
     private var pinConfirmed = false
     private var transferCompleted = false
     private var isRunning = false
@@ -158,6 +163,29 @@ class BleKeyShareServer(
                 (hash[3].toInt() and 0xFF)
         val pin = (num.toLong() and 0xFFFFFFFFL) % 1000000L
         return pin.toString().padStart(6, '0')
+    }
+
+    /** Derive a purpose-bound AES-256 key with RFC 5869 HKDF-SHA256. */
+    private fun deriveKeyEncryptionKey(secret: ByteArray): ByteArray {
+        val mac = Mac.getInstance("HmacSHA256")
+        mac.init(SecretKeySpec(ByteArray(32), "HmacSHA256"))
+        val prk = mac.doFinal(secret)
+        mac.init(SecretKeySpec(prk, "HmacSHA256"))
+        val info = "stashly-ble-key".toByteArray(Charsets.UTF_8)
+        return mac.doFinal(info + byteArrayOf(1)).copyOf(32)
+    }
+
+    private fun encryptMasterKey(): ByteArray {
+        val secret = sharedSecret ?: throw IllegalStateException("ECDH secret is not available")
+        val iv = ByteArray(12).also { SecureRandom().nextBytes(it) }
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(
+            Cipher.ENCRYPT_MODE,
+            SecretKeySpec(deriveKeyEncryptionKey(secret), "AES"),
+            GCMParameterSpec(128, iv),
+        )
+        val masterKeyBytes = Base64.decode(masterKeyBase64, Base64.DEFAULT)
+        return iv + cipher.doFinal(masterKeyBytes)
     }
 
     /**
@@ -265,6 +293,7 @@ class BleKeyShareServer(
         gattServer = null
         ecdhKeyPair = null
         sharedSecret = null
+        encryptedKeyPayload = null
         pinConfirmed = false
         transferCompleted = false
         Log.d(TAG, "BLE server stopped")
@@ -331,9 +360,9 @@ class BleKeyShareServer(
                         return
                     }
 
-                    // Send the master key as Base64 text
-                    val keyBytes = masterKeyBase64.toByteArray(Charsets.UTF_8)
-                    Log.d(TAG, "Sending master key (${keyBytes.size} bytes)")
+                    // Encrypt the decoded 256-bit master key once per session/read.
+                    val keyBytes = encryptedKeyPayload ?: encryptMasterKey().also { encryptedKeyPayload = it }
+                    Log.d(TAG, "Sending encrypted master key (${keyBytes.size} bytes)")
 
                     if (offset >= keyBytes.size) {
                         gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, ByteArray(0))

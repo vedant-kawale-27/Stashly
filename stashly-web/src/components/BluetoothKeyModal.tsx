@@ -45,12 +45,36 @@ async function derivePinFromSecret(sharedSecret: ArrayBuffer): Promise<string> {
   return num.toString().padStart(6, "0");
 }
 
+/** Derive the separate AES-GCM transport key with HKDF-SHA256. */
+async function deriveKeyEncryptionKey(sharedSecret: ArrayBuffer): Promise<CryptoKey> {
+  const baseKey = await crypto.subtle.importKey("raw", sharedSecret, "HKDF", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits(
+    {
+      name: "HKDF",
+      hash: "SHA-256",
+      salt: new Uint8Array(0),
+      info: new TextEncoder().encode("stashly-ble-key"),
+    },
+    baseKey,
+    256,
+  );
+  return crypto.subtle.importKey("raw", bits, "AES-GCM", false, ["decrypt"]);
+}
+
 /**
  * Safely extract a proper ArrayBuffer from a DataView, handling possible
  * byteOffset issues (some BLE stacks return DataViews with non-zero offsets).
  */
 function dataViewToArrayBuffer(dv: DataView): ArrayBuffer {
   return dv.buffer.slice(dv.byteOffset, dv.byteOffset + dv.byteLength) as ArrayBuffer;
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(binary);
 }
 
 
@@ -206,18 +230,20 @@ export function BluetoothKeyModal({ isOpen, onClose, onKeyReceived }: Props) {
       // Small delay to let Android process the PIN confirmation before we read
       await new Promise((r) => setTimeout(r, 200));
 
-      // Read the master key from the characteristic
-      // Android sends it as raw UTF-8 Base64 text after PIN confirmation
+      // Read the AES-GCM payload from the characteristic after PIN confirmation.
       const keyDataDV = await encryptedKeyChar.readValue();
       const keyBuffer = dataViewToArrayBuffer(keyDataDV);
 
-      // Decode the received data as UTF-8 Base64 master key
-      const decoder = new TextDecoder("utf-8");
-      const masterKeyBase64 = decoder.decode(keyBuffer).trim();
-
-      if (!masterKeyBase64 || masterKeyBase64.length < 10) {
-        throw new Error("Received invalid key data from device.");
-      }
+      const sharedSecret = sharedSecretRef.current;
+      if (!sharedSecret) throw new Error("ECDH session key is unavailable.");
+      if (keyBuffer.byteLength < 12 + 16) throw new Error("Received incomplete encrypted key data.");
+      const key = await deriveKeyEncryptionKey(sharedSecret);
+      const masterKeyBytes = await crypto.subtle.decrypt(
+        { name: "AES-GCM", iv: keyBuffer.slice(0, 12), tagLength: 128 },
+        key,
+        keyBuffer.slice(12),
+      );
+      const masterKeyBase64 = bytesToBase64(new Uint8Array(masterKeyBytes));
 
       // Validate it's a proper 32-byte base64 key
       try {
