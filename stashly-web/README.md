@@ -95,7 +95,7 @@ The web client implements the exact cryptographic counterpart to the Android app
 - Asynchronous file previewing and downloads with progress indicators and error normalization (e.g., handling offline nodes without cached copies).
 
 ### 7. `WindowsMountModal.tsx`
-- Provides step-by-step PowerShell scripts and WebDAV connection instructions to mount the Android storage node as a Windows mapped network drive (`Z:`).
+- Explains that native Windows drive mapping is not available yet and directs users to the browser-based file browser.
 
 ### 8. Device, settings, and offline features
 - `DevicePicker.tsx` keeps file operations tied to an explicitly selected node.

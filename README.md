@@ -6,7 +6,7 @@
 
 ## 🏗️ Architecture Overview
 
-Stashly employs a distributed, client-side zero-knowledge architecture divided into three distinct operational planes: the **Mobile Storage Plane** (`stashly-android`), the **Zero-Knowledge Relay Plane** (`stashly-broker`), and the **Consumer Client Plane** (`stashly-web` & Desktop Clients).
+Stashly employs a distributed, client-side zero-knowledge architecture divided into three distinct operational planes: the **Mobile Storage Plane** (`stashly-android`), the **Zero-Knowledge Relay Plane** (`stashly-broker`), and the **Consumer Client Plane** (`stashly-web`).
 
 ### System Component Diagram
 
@@ -51,7 +51,6 @@ graph TB
         WebUI["React 18 Web Dashboard"]
         WebCrypto["W3C Web Crypto Engine (In-Memory)"]
         BrowserSession["Session Master Key (Client Memory)"]
-        WinDrive["Windows WebDAV Mapped Drive (Z:)"]
 
         WebUI <--> WebCrypto
         BrowserSession --> WebCrypto
@@ -61,7 +60,6 @@ graph TB
     PhoneWS <===>|"Outbound WSS: hello / file_sync / fetch_chunk responses"| WSServer
     WebUI <===>|"HTTPS: REST API & Presence Heartbeat"| RESTServer
     WebUI <===>|"HTTPS: Download Ciphertext + Wrapped DEK"| RESTServer
-    WinDrive -.->|"WebDAV Protocol (Z: Drive)"| RESTServer
 ```
 
 ---
@@ -136,6 +134,14 @@ backward compatibility.
 | **File Metadata (Name, Size)** | Indexed from phone filesystem | Stored in PostgreSQL | Displayed in Vault Explorer |
 
 ---
+
+## Security Model
+
+Files are encrypted on the Android device with a fresh AES-256-GCM data key per file. The broker stores and relays only ciphertext and DEKs wrapped by the account master key; it never receives a decryption key. The web client unwraps DEKs and decrypts files locally with Web Crypto.
+
+Share links narrow access to one file. When a link is created, the browser unwraps that file's DEK locally and places it in the URL fragment (`#dek=...`). Fragments are not sent in HTTP requests, so the broker sees only an opaque, expiring, revocable share token. A recipient can decrypt the shared file in a fresh browser using the link alone, without the account master key or account login.
+
+Native Windows drive mapping is not currently available. Windows users should use the browser-based file browser, which preserves the same client-side decryption boundary.
 
 ## 📁 Repository Structure
 

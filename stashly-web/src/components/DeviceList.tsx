@@ -382,8 +382,6 @@ export function DeviceList({
       {mountDevice && (
         <WindowsMountModal
           device={mountDevice}
-          brokerUrl={brokerUrl}
-          token={token}
           onClose={() => setMountDevice(null)}
         />
       )}
