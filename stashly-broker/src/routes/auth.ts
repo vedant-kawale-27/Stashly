@@ -13,12 +13,16 @@ import { AuthedRequest, requireAuth } from "../middleware";
 import { audit, decryptSecret, encryptSecret, generateTotpSecret, verifyTotp } from "../security";
 
 export const authRouter = Router();
+const MIN_PASSWORD_LENGTH = 12;
 
 authRouter.post("/register", async (req, res) => {
   const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
   const password = typeof req.body?.password === "string" ? req.body.password : "";
   if (!email || !password) {
     return res.status(400).json({ error: "email and password are required" });
+  }
+  if (password.length < MIN_PASSWORD_LENGTH) {
+    return res.status(400).json({ error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters` });
   }
 
   const existing = await prisma.user.findUnique({ where: { email } });
@@ -109,8 +113,8 @@ authRouter.post("/password", requireAuth, async (req: AuthedRequest, res) => {
   if (!currentPassword || !newPassword) {
     return res.status(400).json({ error: "currentPassword and newPassword are required" });
   }
-  if (newPassword.length < 6) {
-    return res.status(400).json({ error: "New password must be at least 6 characters" });
+  if (newPassword.length < MIN_PASSWORD_LENGTH) {
+    return res.status(400).json({ error: `New password must be at least ${MIN_PASSWORD_LENGTH} characters` });
   }
 
   const user = await prisma.user.findUnique({ where: { id: req.user!.userId } });
