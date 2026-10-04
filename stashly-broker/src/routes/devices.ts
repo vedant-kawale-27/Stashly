@@ -16,6 +16,19 @@ import { AuthedRequest, requireAuth } from "../middleware";
 import { deviceHub } from "../ws/deviceHub";
 import { isDirectoryEntry, isPathAllowed } from "../access";
 
+async function cleanupDeviceFileCache(deviceId: string) {
+  const files = await prisma.fileEntry.findMany({
+    where: { deviceId },
+    select: { id: true, cacheKey: true },
+  });
+  await Promise.all(files.map((file) =>
+    Promise.all([
+      fs.promises.unlink(path.join(config.storageDir, file.cacheKey ?? `${file.id}.bin`)).catch(() => {}),
+      fs.promises.rm(path.join(config.storageDir, "chunks", file.id), { recursive: true, force: true }).catch(() => {}),
+    ])
+  ));
+}
+
 export const devicesRouter = Router();
 
 devicesRouter.post("/:deviceId/sync", requireAuth, async (req: AuthedRequest, res) => {
@@ -67,9 +80,7 @@ devicesRouter.delete("/self/reset", async (req, res) => {
     if (!device) return res.status(404).json({ error: "Device not found" });
 
     deviceHub.notifyDeviceRemoved(payload.deviceId, "Node credentials were reset");
-    await Promise.all(device.files.map((file) =>
-      fs.promises.unlink(path.join(config.storageDir, `${file.id}.bin`)).catch(() => {})
-    ));
+    await cleanupDeviceFileCache(payload.deviceId);
     await prisma.fileEntry.deleteMany({ where: { deviceId: payload.deviceId } });
     await prisma.device.delete({ where: { id: payload.deviceId } });
     return res.status(204).send();
@@ -318,6 +329,7 @@ devicesRouter.delete("/self/client/:targetUserId", async (req, res) => {
     deviceHub.notifyClientRemoved(payload.deviceId, targetUserId);
     if (remaining === 0) {
       deviceHub.notifyDeviceRemoved(payload.deviceId, "All client connections were removed from this node");
+      await cleanupDeviceFileCache(payload.deviceId);
       await prisma.fileEntry.deleteMany({ where: { deviceId: payload.deviceId } });
       await prisma.device.delete({ where: { id: payload.deviceId } }).catch(() => {});
     }
@@ -479,6 +491,7 @@ devicesRouter.delete("/:id", requireAuth, async (req: AuthedRequest, res) => {
   if (link.role === "owner" && totalLinks <= 1) {
     deviceHub.notifyClientRemoved(req.params.id, req.user!.userId);
     deviceHub.notifyDeviceRemoved(req.params.id, "Node was removed from the Stashly Web Dashboard");
+    await cleanupDeviceFileCache(req.params.id);
     await prisma.fileEntry.deleteMany({ where: { deviceId: req.params.id } });
     await prisma.device.delete({ where: { id: req.params.id } });
   } else {

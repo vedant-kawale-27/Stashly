@@ -1,4 +1,4 @@
-name: CI
+﻿name: CI
 
 on:
   push:
@@ -47,6 +47,9 @@ jobs:
     defaults:
       run:
         working-directory: stashly-broker
+    env:
+      DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/stashly?schema=public"
+      JWT_SECRET: "ci-dummy-jwt-secret-for-build-and-lint"
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -91,18 +94,12 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
-          cache: gradle
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android SDK components
-        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
-
-      - name: Set up Gradle 8.7
+      - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: 8.7
+
+      - name: Make gradlew executable
+        run: chmod +x gradlew
 
       - name: Run Android lint, tests, and debug build
-        run: gradle --no-daemon --stacktrace lint test assembleDebug
+        run: ./gradlew --no-daemon --stacktrace lint test assembleDebug

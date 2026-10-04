@@ -8,11 +8,38 @@
 
 package com.stashly.app
 
+import android.bluetooth.BluetoothManager
 import android.content.Context
 
-/** Owns the lifecycle and construction of the BLE key-sharing session. */
+/**
+ * Owns the lifecycle and construction of the BLE key-sharing session,
+ * plus the permission-check and Bluetooth-availability orchestration.
+ *
+ * Takes a [Context] for BLE system-service access (not for UI — the
+ * Activity passes dialog/toast callbacks separately).
+ */
 class BluetoothPairingCoordinator(private val context: Context) {
     private var server: BleKeyShareServer? = null
+
+    /** Bluetooth availability states. */
+    enum class BluetoothState { NOT_AVAILABLE, DISABLED, READY }
+
+    /**
+     * Return the list of BLE permissions that have NOT been granted yet.
+     * @param isGranted check function — typically wraps checkSelfPermission.
+     */
+    fun getNeededPermissions(isGranted: (String) -> Boolean): Array<String> {
+        return SystemPermissionCoordinator.bluetoothPermissions()
+            .filter { !isGranted(it) }
+            .toTypedArray()
+    }
+
+    /** Check whether the Bluetooth adapter is available and enabled. */
+    fun checkBluetoothState(): BluetoothState {
+        val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
+            ?: return BluetoothState.NOT_AVAILABLE
+        return if (adapter.isEnabled) BluetoothState.READY else BluetoothState.DISABLED
+    }
 
     fun createServer(
         masterKeyBase64: String,

@@ -32,7 +32,7 @@ app.use(helmet({
   crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
 }));
 
-app.use(cors({ exposedHeaders: ["X-Encrypted-Dek", "X-From-Local-Cache"] }));
+app.use(cors({ exposedHeaders: ["X-Encrypted-Dek", "X-From-Local-Cache", "X-Stashly-Cache"] }));
 app.use(express.json({ limit: "50mb" }));
 
 const authLimiter = rateLimit({

@@ -105,6 +105,7 @@ model FileEntry {
   isCached      Boolean   @default(false)
   cacheKey      String?   // pointer into local file storage or blob storage
   cachedAt      DateTime?
+  cachedContentHash String?
   lastAccessAt  DateTime?
   encryptionFormat String @default("single") // "single" = legacy whole-file AES-GCM, "chunked" = independently encrypted chunks
   createdAt     DateTime  @default(now())

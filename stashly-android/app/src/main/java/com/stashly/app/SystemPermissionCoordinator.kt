@@ -8,7 +8,6 @@
 
 package com.stashly.app
 
-import android.content.Context
 import android.os.Build
 import android.os.Environment
 
@@ -21,5 +20,14 @@ object SystemPermissionCoordinator {
         arrayOf(android.Manifest.permission.BLUETOOTH_ADVERTISE, android.Manifest.permission.BLUETOOTH_CONNECT)
     } else {
         emptyArray()
+    }
+
+    /**
+     * Gate an action on full storage access.
+     * @param action the work to do if permission is granted.
+     * @param onNeedsPermission called if permission is missing (Activity shows dialog).
+     */
+    inline fun withStorageAccess(action: () -> Unit, onNeedsPermission: () -> Unit) {
+        if (hasFullStorageAccess()) action() else onNeedsPermission()
     }
 }

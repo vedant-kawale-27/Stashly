@@ -301,7 +301,10 @@ class DeviceHub {
 
     await Promise.all(files.map((file) => {
       const cacheName = file.cacheKey ?? `${file.id}.bin`;
-      return fs.promises.unlink(path.join(config.storageDir, cacheName)).catch(() => undefined);
+      return Promise.all([
+        fs.promises.unlink(path.join(config.storageDir, cacheName)).catch(() => undefined),
+        fs.promises.rm(path.join(config.storageDir, "chunks", file.id), { recursive: true, force: true }).catch(() => undefined),
+      ]);
     }));
     await prisma.fileEntry.deleteMany({ where: { deviceId, deletedAt: null } });
   }
@@ -321,10 +324,11 @@ class DeviceHub {
     });
     const removedFiles = existingFiles.filter((file) => !incomingPaths.has(file.path));
 
-    // Clean up cache files for removed entries
+    // Clean up cache files and chunk caches for removed entries
     await Promise.all(removedFiles.map(async (file) => {
       const cacheName = file.cacheKey ?? `${file.id}.bin`;
       await fs.promises.unlink(path.join(config.storageDir, cacheName)).catch(() => undefined);
+      await fs.promises.rm(path.join(config.storageDir, "chunks", file.id), { recursive: true, force: true }).catch(() => undefined);
     }));
     if (removedFiles.length > 0) {
       await prisma.fileEntry.deleteMany({ where: { id: { in: removedFiles.map((file) => file.id) } } });
@@ -332,7 +336,8 @@ class DeviceHub {
 
     for (const f of validFiles) {
       const existing = await prisma.fileEntry.findUnique({ where: { deviceId_path: { deviceId, path: f.path } } });
-      if (existing && existing.contentHash !== f.contentHash && existing.contentHash !== "directory") {
+      const contentHashChanged = existing && existing.contentHash !== f.contentHash;
+      if (contentHashChanged && existing.contentHash !== "directory") {
         await prisma.fileVersion.create({
           data: {
             fileId: existing.id, deviceId, path: existing.path, name: existing.name,
@@ -340,6 +345,10 @@ class DeviceHub {
             mimeType: existing.mimeType, encryptedDek: existing.encryptedDek, cacheKey: existing.cacheKey,
           },
         });
+        // Invalidate stale cached chunks and legacy cache file
+        await fs.promises.rm(path.join(config.storageDir, "chunks", existing.id), { recursive: true, force: true }).catch(() => undefined);
+        const cacheName = existing.cacheKey ?? `${existing.id}.bin`;
+        await fs.promises.unlink(path.join(config.storageDir, cacheName)).catch(() => undefined);
       }
       const format = f.sizeBytes > DeviceHub.CHUNKED_THRESHOLD ? "chunked" : "single";
       await prisma.fileEntry.upsert({
@@ -353,6 +362,8 @@ class DeviceHub {
           mimeType: f.mimeType ?? null,
           encryptedDek: f.encryptedDek,
           encryptionFormat: format,
+          isCached: false,
+          cachedContentHash: null,
         },
         update: {
           name: f.name,
@@ -362,6 +373,12 @@ class DeviceHub {
           encryptedDek: f.encryptedDek,
           encryptionFormat: format,
           deletedAt: null,
+          ...(contentHashChanged ? {
+            isCached: false,
+            cacheKey: null,
+            cachedAt: null,
+            cachedContentHash: null,
+          } : {}),
         },
       });
     }

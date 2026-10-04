@@ -276,8 +276,8 @@ filesRouter.patch("/:id", requireAuth, async (req: AuthedRequest, res) => {
 });
 
 // GET /files/:id/download — fetch ciphertext, live from the phone.
-// ?stream=chunked → stream in 1MB chunks (broker never buffers full file)
-// default → legacy full-file fetch (backward compatible)
+// ?stream=chunked ➔ stream in 1MB chunks (broker never buffers full file)
+// default ➔ legacy full-file fetch (backward compatible)
 filesRouter.get("/:id/download", requireAuth, async (req: AuthedRequest, res) => {
   const file = await prisma.fileEntry.findUnique({ where: { id: req.params.id } });
   if (!file) return res.status(404).json({ error: "File not found" });
@@ -285,20 +285,10 @@ filesRouter.get("/:id/download", requireAuth, async (req: AuthedRequest, res) =>
   const link = await assertCanAccessDevice(req.user!.userId, file.deviceId);
   if (!link || !isPathAllowed(file.path, link)) return res.status(404).json({ error: "File not accessible for this client" });
 
-  const isOnline = deviceHub.isOnline(file.deviceId);
-
-  if (!isOnline) {
-    return res.status(503).json({
-      error: "The Android node is offline and file sharing is stopped",
-      code: "DEVICE_OFFLINE_SHARING_STOPPED",
-      deviceOnline: false,
-    });
-  }
-
   const useChunked = req.query.stream === "chunked";
 
   if (useChunked) {
-    // ── Chunked streaming mode ──
+    // ─── Chunked streaming mode ───
     // Each chunk is independently AES-GCM encrypted by the Android device.
     // Response format: [4-byte big-endian chunk length][encrypted chunk bytes]...
     //                  [0x00000000] (end marker)
@@ -309,24 +299,55 @@ filesRouter.get("/:id/download", requireAuth, async (req: AuthedRequest, res) =>
     let lastChunk = Math.max(0, totalChunks - 1);
 
     const rangeHeader = req.headers.range;
+    let requestedStart = 0;
+    let end = totalSize - 1;
+    let isRange = false;
+
     if (typeof rangeHeader === "string") {
       const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader.trim());
       if (!match || (!match[1] && !match[2])) {
         return res.status(416).setHeader("Content-Range", `bytes */${totalSize}`).json({ error: "Invalid byte range" });
       }
-      const requestedStart = match[1] ? Number(match[1]) : Math.max(0, totalSize - Number(match[2]));
+      requestedStart = match[1] ? Number(match[1]) : Math.max(0, totalSize - Number(match[2]));
       const requestedEnd = match[2] ? Number(match[2]) : totalSize - 1;
       if (!Number.isSafeInteger(requestedStart) || !Number.isSafeInteger(requestedEnd) ||
           requestedStart < 0 || requestedStart >= totalSize || requestedStart > requestedEnd) {
         return res.status(416).setHeader("Content-Range", `bytes */${totalSize}`).json({ error: "Requested range is not satisfiable" });
       }
-      const end = Math.min(requestedEnd, totalSize - 1);
+      end = Math.min(requestedEnd, totalSize - 1);
       firstChunk = Math.floor(requestedStart / CHUNK_SIZE);
       lastChunk = Math.floor(end / CHUNK_SIZE);
+      isRange = true;
+    }
+
+    // Check on-disk chunk cache status
+    const isOnline = deviceHub.isOnline(file.deviceId);
+    const isHashMatching = !!file.contentHash && file.cachedContentHash === file.contentHash;
+    let hitCount = 0;
+    const totalRequested = lastChunk - firstChunk + 1;
+    const chunkCached = [];
+
+    for (let i = firstChunk; i <= lastChunk; i++) {
+      const chunkPath = path.join(config.storageDir, "chunks", file.id, `${i}.bin`);
+      const exists = isHashMatching && fs.existsSync(chunkPath);
+      chunkCached[i - firstChunk] = exists;
+      if (exists) hitCount++;
+    }
+
+    const allHits = hitCount === totalRequested;
+    const cacheStatus = allHits ? "hit" : hitCount > 0 ? "partial" : "miss";
+
+    // If any requested chunk is a cache miss AND device is offline -> 503
+    if (!allHits && !isOnline) {
+      return res.status(503).json({
+        error: "The Android node is offline and file sharing is stopped",
+        code: "DEVICE_OFFLINE_SHARING_STOPPED",
+        deviceOnline: false,
+      });
+    }
+
+    if (isRange) {
       res.status(206);
-      // AES-GCM authenticates complete chunks. The response therefore contains
-      // complete encrypted chunks covering the requested range, not a partial
-      // ciphertext fragment. The web client slices plaintext after decrypting.
       res.setHeader("X-Stashly-Range-Start", String(requestedStart));
       res.setHeader("X-Stashly-Range-End", String(end));
     }
@@ -338,6 +359,7 @@ filesRouter.get("/:id/download", requireAuth, async (req: AuthedRequest, res) =>
     res.setHeader("X-Total-Plaintext-Size", String(totalSize));
     res.setHeader("X-Chunk-First", String(firstChunk));
     res.setHeader("X-Chunk-Last", String(lastChunk));
+    res.setHeader("X-Stashly-Cache", cacheStatus);
     res.setHeader("Transfer-Encoding", "chunked");
 
     // Stop requesting chunks from Android if the browser disconnects.
@@ -359,15 +381,73 @@ filesRouter.get("/:id/download", requireAuth, async (req: AuthedRequest, res) =>
 
         const offset = i * CHUNK_SIZE;
         const length = Math.min(CHUNK_SIZE, totalSize - offset);
-        const encryptedChunk = await deviceHub.requestChunk(
-          file.deviceId,
-          file.path,
-          offset,
-          length,
-          abortController.signal,
-        );
+        const chunkPath = path.join(config.storageDir, "chunks", file.id, `${i}.bin`);
+
+        let encryptedChunk: Buffer;
+
+        if (chunkCached[i - firstChunk]) {
+          try {
+            encryptedChunk = await fs.promises.readFile(chunkPath);
+          } catch (readErr) {
+            if (!deviceHub.isOnline(file.deviceId)) {
+              throw new Error("DEVICE_OFFLINE");
+            }
+            encryptedChunk = await deviceHub.requestChunk(
+              file.deviceId,
+              file.path,
+              offset,
+              length,
+              abortController.signal,
+            );
+            const chunkToCache = encryptedChunk;
+            (async () => {
+              try {
+                const chunkDir = path.join(config.storageDir, "chunks", file.id);
+                await fs.promises.mkdir(chunkDir, { recursive: true });
+                await fs.promises.writeFile(chunkPath, chunkToCache);
+              } catch (err) {
+                console.warn(`Failed to write chunk cache for file ${file.id} chunk ${i}:`, err);
+              }
+            })();
+          }
+        } else {
+          encryptedChunk = await deviceHub.requestChunk(
+            file.deviceId,
+            file.path,
+            offset,
+            length,
+            abortController.signal,
+          );
+
+          // Asynchronously write chunk to disk cache
+          const chunkToCache = encryptedChunk;
+          (async () => {
+            try {
+              const chunkDir = path.join(config.storageDir, "chunks", file.id);
+              await fs.promises.mkdir(chunkDir, { recursive: true });
+              await fs.promises.writeFile(chunkPath, chunkToCache);
+            } catch (err) {
+              console.warn(`Failed to write chunk cache for file ${file.id} chunk ${i}:`, err);
+            }
+          })();
+        }
 
         if (abortController.signal.aborted) throw new Error("REQUEST_CANCELLED");
+
+        // Update DB metadata if not already recorded for this contentHash
+        if (!file.isCached || file.cachedContentHash !== file.contentHash) {
+          file.isCached = true;
+          file.cachedContentHash = file.contentHash;
+          prisma.fileEntry.update({
+            where: { id: file.id },
+            data: {
+              isCached: true,
+              cachedAt: new Date(),
+              cachedContentHash: file.contentHash,
+              lastAccessAt: new Date(),
+            },
+          }).catch((err) => console.warn(`Failed to update cache metadata for ${file.id}:`, err));
+        }
 
         // Write 4-byte big-endian length prefix + encrypted chunk
         const lengthBuf = Buffer.alloc(4);
@@ -398,13 +478,42 @@ filesRouter.get("/:id/download", requireAuth, async (req: AuthedRequest, res) =>
       });
     }
   } else {
-    // ── Legacy full-file mode ──
+    // ─── Legacy full-file mode ───
+    const isOnline = deviceHub.isOnline(file.deviceId);
+    const cacheFilename = file.cacheKey ?? `${file.id}.bin`;
+    const cacheFilePath = path.join(config.storageDir, cacheFilename);
+    const isCachedOnDisk = file.isCached && file.cachedContentHash === file.contentHash && fs.existsSync(cacheFilePath);
+
+    if (isCachedOnDisk) {
+      try {
+        const ciphertext = await fs.promises.readFile(cacheFilePath);
+        prisma.fileEntry.update({
+          where: { id: file.id },
+          data: { lastAccessAt: new Date() },
+        }).catch(() => {});
+
+        res.setHeader("Content-Type", "application/octet-stream");
+        res.setHeader("X-Encrypted-Dek", file.encryptedDek);
+        res.setHeader("X-From-Local-Cache", "true");
+        res.setHeader("X-Stashly-Cache", "hit");
+        return res.send(ciphertext);
+      } catch (err) {
+        console.warn("Failed to read from local storage cache:", err);
+      }
+    }
+
+    if (!isOnline) {
+      return res.status(503).json({
+        error: "The Android node is offline and file sharing is stopped",
+        code: "DEVICE_OFFLINE_SHARING_STOPPED",
+        deviceOnline: false,
+      });
+    }
+
     try {
       const ciphertext = await deviceHub.requestFile(file.deviceId, file.path);
 
       // Save to local filesystem storage cache for faster repeated access
-      const cacheFilename = `${file.id}.bin`;
-      const cacheFilePath = path.join(config.storageDir, cacheFilename);
       try {
         await fs.promises.writeFile(cacheFilePath, ciphertext);
         await prisma.fileEntry.update({
@@ -414,6 +523,7 @@ filesRouter.get("/:id/download", requireAuth, async (req: AuthedRequest, res) =>
             isCached: true,
             cacheKey: cacheFilename,
             cachedAt: new Date(),
+            cachedContentHash: file.contentHash,
           },
         });
       } catch (cacheErr) {
@@ -422,6 +532,7 @@ filesRouter.get("/:id/download", requireAuth, async (req: AuthedRequest, res) =>
 
       res.setHeader("Content-Type", "application/octet-stream");
       res.setHeader("X-Encrypted-Dek", file.encryptedDek);
+      res.setHeader("X-Stashly-Cache", "miss");
       return res.send(ciphertext);
     } catch (err: any) {
       if (err.message !== "DEVICE_TIMEOUT" && err.message !== "DEVICE_OFFLINE") {
@@ -494,6 +605,7 @@ filesRouter.delete("/trash/empty", requireAuth, async (req: AuthedRequest, res) 
     }
     const cacheName = file.cacheKey ?? `${file.id}.bin`;
     await fs.promises.unlink(path.join(config.storageDir, cacheName)).catch(() => {});
+    await fs.promises.rm(path.join(config.storageDir, "chunks", file.id), { recursive: true, force: true }).catch(() => {});
   }
 
   await prisma.fileEntry.deleteMany({
@@ -520,7 +632,8 @@ filesRouter.delete("/:id", requireAuth, async (req: AuthedRequest, res) => {
         await deviceHub.trashOperation(file.deviceId, file.path, "permanent");
       }
       const cacheName = file.cacheKey ?? `${file.id}.bin`;
-      await fs.promises.unlink(path.join(config.storageDir, cacheName)).catch(() => {});
+    await fs.promises.unlink(path.join(config.storageDir, cacheName)).catch(() => {});
+    await fs.promises.rm(path.join(config.storageDir, "chunks", file.id), { recursive: true, force: true }).catch(() => {});
       await prisma.fileEntry.delete({ where: { id: file.id } });
     } else {
       // Soft-delete to Android storage recycle bin (.stashly_trash)

@@ -8,10 +8,7 @@
 
 package com.stashly.app
 
-import android.Manifest
 import android.annotation.SuppressLint
-import android.bluetooth.BluetoothManager
-import android.content.pm.PackageManager
 import android.app.AlertDialog
 import android.app.NotificationManager
 import android.content.BroadcastReceiver
@@ -20,60 +17,48 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.Environment
-import android.os.StatFs
-import android.provider.DocumentsContract
 import android.provider.Settings
 import android.view.View
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.lifecycle.ViewModelProvider
 import androidx.appcompat.app.AppCompatActivity
-import androidx.activity.viewModels
-import androidx.core.net.toUri
 import com.journeyapps.barcodescanner.CaptureActivity
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import com.stashly.app.databinding.ActivityMainBinding
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import androidx.work.ExistingPeriodicWorkPolicy
-import androidx.work.PeriodicWorkRequestBuilder
-import androidx.work.WorkManager
-import org.json.JSONArray
-import org.json.JSONObject
-import java.io.File
-import java.text.SimpleDateFormat
-import java.time.Instant
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
-import java.util.Date
 import java.util.Locale
-import java.util.concurrent.TimeUnit
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var storage: SecureStorage
-    private val mainViewModel: MainViewModel by viewModels()
-    private val bluetoothPairingCoordinator by lazy { BluetoothPairingCoordinator(this) }
+    private lateinit var vm: MainViewModel
+
+    // Controllers (initialized in onCreate after storage is ready)
+    private lateinit var nodeCtrl: NodeController
+    private lateinit var accountsCtrl: ConnectedAccountsController
+    private lateinit var pairingCtrl: PairingFlowController
+    private val btCoordinator by lazy { BluetoothPairingCoordinator(this) }
+
     private var pairingProgressDialog: AlertDialog? = null
     private var clientRemovedDialog: AlertDialog? = null
     private var bleKeyShareServer: BleKeyShareServer? = null
     private var bleShareDialog: AlertDialog? = null
 
+    // ── ActivityResultLaunchers (must stay as Activity fields) ──
+
     private val blePermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
-        val allGranted = permissions.values.all { it }
-        if (allGranted) {
-            checkBluetoothEnabledAndShare()
+        if (permissions.values.all { it }) {
+            checkBluetoothAndShare()
         } else {
             Toast.makeText(this, "Bluetooth permissions are required to share the key.", Toast.LENGTH_LONG).show()
         }
@@ -82,1169 +67,466 @@ class MainActivity : AppCompatActivity() {
     @SuppressLint("MissingPermission")
     private val bleEnableLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        val adapter = (getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
-        if (adapter != null && adapter.isEnabled) {
-            startBluetoothKeyShare()
+    ) {
+        if (btCoordinator.checkBluetoothState() == BluetoothPairingCoordinator.BluetoothState.READY) {
+            onStartBluetoothKeyShare()
         } else {
             Toast.makeText(this, "Bluetooth was not enabled. Key share cancelled.", Toast.LENGTH_LONG).show()
         }
     }
 
-    private val unlinkedReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == StorageNodeService.ACTION_NODE_UNLINKED) {
-                if (clientRemovedDialog?.isShowing == true) {
-                    storage.pendingFinalRemovalReason = intent.getStringExtra(StorageNodeService.EXTRA_UNLINK_REASON)
-                } else {
-                    handleConnectionRemoved()
-                }
-            } else if (intent?.action == StorageNodeService.ACTION_CLIENT_UNLINKED) {
-                fetchLiveBrokerStatus()
-                showPendingClientRemovedDialog()
-            } else if (intent?.action == StorageNodeService.ACTION_CLIENT_PRESENCE) {
-                fetchLiveBrokerStatus()
-            }
-        }
-    }
-
     private val qrScanLauncher = registerForActivityResult(ScanContract()) { result ->
-        if (result.contents != null) {
-            handleScannedQr(result.contents)
-        }
+        if (result.contents != null) handleScannedQr(result.contents)
     }
 
     private val folderPickerLauncher = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
-        if (uri != null) {
-            if (mainViewModel.pendingScopePairing != null) handlePairingScopeFolder(uri)
-        } else if (mainViewModel.pendingScopePairing != null) {
-            val pairing = mainViewModel.pendingScopePairing
-            mainViewModel.pendingScopePairing = null
-            if (pairing != null) showAccessScopeDialog(pairing)
+        val pairing = vm.pendingScopePairing
+        if (uri != null && pairing != null) {
+            val scope = pairingCtrl.parseFolderScope(uri, contentResolver)
+            if (scope != null) doSavePairingScope(pairing, scope)
+        } else if (uri == null && pairing != null) {
+            vm.pendingScopePairing = null
+            showAccessScopeDialog(pairing)
         }
     }
 
     private val filePickerLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null && mainViewModel.pendingScopePairing != null) {
-            handlePairingScopeFile(uri)
-        } else if (uri == null && mainViewModel.pendingScopePairing != null) {
-            val pairing = mainViewModel.pendingScopePairing
-            mainViewModel.pendingScopePairing = null
-            if (pairing != null) showAccessScopeDialog(pairing)
+        val pairing = vm.pendingScopePairing
+        if (uri != null && pairing != null) {
+            val scope = pairingCtrl.parseFileScope(uri, contentResolver)
+            if (scope != null) doSavePairingScope(pairing, scope)
+        } else if (uri == null && pairing != null) {
+            vm.pendingScopePairing = null
+            showAccessScopeDialog(pairing)
         }
     }
+
+    private val unlinkedReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                StorageNodeService.ACTION_NODE_UNLINKED -> {
+                    if (clientRemovedDialog?.isShowing == true) {
+                        storage.pendingFinalRemovalReason = intent.getStringExtra(StorageNodeService.EXTRA_UNLINK_REASON)
+                    } else handleConnectionRemoved()
+                }
+                StorageNodeService.ACTION_CLIENT_UNLINKED -> { fetchLiveBrokerStatus(); showPendingClientRemovedDialog() }
+                StorageNodeService.ACTION_CLIENT_PRESENCE -> fetchLiveBrokerStatus()
+            }
+        }
+    }
+
+    // ── Lifecycle ──
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
-
         storage = SecureStorage(this)
-        scheduleTrashCleanup()
-        if (storage.isPaired) {
-            KeyManager(storage).getOrCreateMasterKey()
-        }
+        vm = ViewModelProvider(this)[MainViewModel::class.java]
+        nodeCtrl = NodeController(storage, vm)
+        accountsCtrl = ConnectedAccountsController(storage, vm)
+        pairingCtrl = PairingFlowController(storage, vm)
 
-        // Setup Bottom Navigation
+        nodeCtrl.scheduleTrashCleanup(applicationContext)
+        if (storage.isPaired) KeyManager(storage).getOrCreateMasterKey()
+
         binding.bottomNavigation.setOnItemSelectedListener { item ->
-            when (item.itemId) {
-                R.id.nav_storage -> showPage(0)
-                R.id.nav_connect -> showPage(1)
-                R.id.nav_settings -> showPage(2)
-            }
-            true
+            when (item.itemId) { R.id.nav_storage -> showPage(0); R.id.nav_connect -> showPage(1); R.id.nav_settings -> showPage(2) }; true
         }
+        if (storage.brokerBaseUrl != null) binding.inputBrokerUrl.setText(storage.brokerBaseUrl)
+        if (binding.inputDeviceName.text.isNullOrEmpty()) binding.inputDeviceName.setText(Build.MODEL)
 
-        // Initialize Form Inputs
-        if (storage.brokerBaseUrl != null) {
-            binding.inputBrokerUrl.setText(storage.brokerBaseUrl)
-        }
-        if (binding.inputDeviceName.text.isNullOrEmpty()) {
-            binding.inputDeviceName.setText(Build.MODEL)
-        }
-
-        // Setup Actions
         binding.btnScanQr.setOnClickListener { onScanQrClicked() }
-        binding.btnToggleNode.setOnClickListener { onToggleNodeClicked() }
-        binding.btnSyncNow.setOnClickListener { onSyncNowClicked() }
+        binding.btnToggleNode.setOnClickListener {
+            nodeCtrl.toggleNode(
+                onStartService = { startForegroundService(Intent(this, StorageNodeService::class.java)) },
+                onStopService = { stopService(Intent(this, StorageNodeService::class.java)) },
+                onNotPaired = { Toast.makeText(this, getString(R.string.toast_pair_first), Toast.LENGTH_SHORT).show() },
+                onStatusChange = { started ->
+                    Toast.makeText(this, getString(if (started) R.string.toast_node_started else R.string.toast_node_stopped), Toast.LENGTH_SHORT).show()
+                    applyNodeStatus()
+                }
+            )
+        }
+        binding.btnSyncNow.setOnClickListener {
+            if (nodeCtrl.syncNow {
+                    startForegroundService(Intent(this, StorageNodeService::class.java).setAction(StorageNodeService.ACTION_SYNC_NOW))
+                }) {
+                Toast.makeText(this, getString(R.string.toast_syncing), Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, getString(R.string.toast_sync_success), Toast.LENGTH_SHORT).show()
+                applyNodeStatus()
+            }
+        }
         binding.btnSubmitPair.setOnClickListener { onPairClicked() }
-        binding.btnEditSystemPermissions.setOnClickListener {
-            startActivity(Intent(this, SystemPermissionsActivity::class.java))
-        }
-        binding.btnManageClientStorageAccess.setOnClickListener {
-            startActivity(Intent(this, ClientStorageAccessActivity::class.java))
-        }
+        binding.btnEditSystemPermissions.setOnClickListener { startActivity(Intent(this, SystemPermissionsActivity::class.java)) }
+        binding.btnManageClientStorageAccess.setOnClickListener { startActivity(Intent(this, ClientStorageAccessActivity::class.java)) }
         binding.btnShowMasterKey.setOnClickListener { onShowMasterKeyClicked() }
         binding.btnRecycleBinCard.setOnClickListener { startActivity(Intent(this, RecycleBinActivity::class.java)) }
         binding.btnResetNode.setOnClickListener { onResetNodeClicked() }
 
-        // Register broadcast receiver for node unlinked events
-        val filter = IntentFilter(StorageNodeService.ACTION_NODE_UNLINKED)
-        filter.addAction(StorageNodeService.ACTION_CLIENT_UNLINKED)
-        filter.addAction(StorageNodeService.ACTION_CLIENT_PRESENCE)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(unlinkedReceiver, filter, RECEIVER_NOT_EXPORTED)
-        } else {
-            registerReceiver(unlinkedReceiver, filter)
+        val filter = IntentFilter(StorageNodeService.ACTION_NODE_UNLINKED).apply {
+            addAction(StorageNodeService.ACTION_CLIENT_UNLINKED)
+            addAction(StorageNodeService.ACTION_CLIENT_PRESENCE)
         }
+        androidx.core.content.ContextCompat.registerReceiver(this, unlinkedReceiver, filter, androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED)
 
-        // Start Foreground Service only if paired and enabled
-        if (storage.isPaired && storage.nodeEnabled) {
-            startForegroundService(Intent(this, StorageNodeService::class.java))
-        } else {
-            stopService(Intent(this, StorageNodeService::class.java))
-            val manager = getSystemService(NotificationManager::class.java)
-            manager?.cancel(1)
-        }
+        if (storage.isPaired && storage.nodeEnabled) startForegroundService(Intent(this, StorageNodeService::class.java))
+        else { stopService(Intent(this, StorageNodeService::class.java)); getSystemService(NotificationManager::class.java)?.cancel(1) }
 
-        // Initial view setup
-        showPage(0)
-        refreshAll()
-    }
-
-    private fun scheduleTrashCleanup() {
-        val request = PeriodicWorkRequestBuilder<TrashCleanupWorker>(1, TimeUnit.DAYS).build()
-        WorkManager.getInstance(applicationContext).enqueueUniquePeriodicWork(
-            "stashly_trash_cleanup",
-            ExistingPeriodicWorkPolicy.KEEP,
-            request,
-        )
+        showPage(0); refreshAll()
     }
 
     override fun onDestroy() {
-        try {
-            bleKeyShareServer?.stop()
-            bleKeyShareServer = null
-            bluetoothPairingCoordinator.stop()
-            bleShareDialog?.dismiss()
-            bleShareDialog = null
-        } catch (_: Exception) {}
-        try {
-            unregisterReceiver(unlinkedReceiver)
-        } catch (_: Exception) {}
+        try { bleKeyShareServer?.stop(); bleKeyShareServer = null; btCoordinator.stop(); bleShareDialog?.dismiss(); bleShareDialog = null } catch (_: Exception) {}
+        try { unregisterReceiver(unlinkedReceiver) } catch (_: Exception) {}
         super.onDestroy()
     }
 
-    override fun onResume() {
-        super.onResume()
-        refreshAll()
-        StashlyWidgetProvider.updateAll(this)
-        showPendingClientRemovedDialog()
+    override fun onResume() { super.onResume(); refreshAll(); StashlyWidgetProvider.updateAll(this); showPendingClientRemovedDialog() }
+
+    // ── Navigation & refresh ──
+
+    private fun showPage(pageIndex: Int) {
+        vm.selectedPage = pageIndex
+        binding.pageStorage.visibility = if (pageIndex == 0) View.VISIBLE else View.GONE
+        binding.pageConnect.visibility = if (pageIndex == 1) View.VISIBLE else View.GONE
+        binding.pageSettings.visibility = if (pageIndex == 2) View.VISIBLE else View.GONE
+        binding.bottomNavigation.menu.findItem(when (pageIndex) { 0 -> R.id.nav_storage; 1 -> R.id.nav_connect; else -> R.id.nav_settings })?.isChecked = true
+        binding.topAppBar.title = getString(when (pageIndex) { 0 -> R.string.title_storage_clients; 1 -> R.string.title_connect_new; else -> R.string.title_settings_perms })
     }
+
+    private fun refreshAll() {
+        nodeCtrl.refreshStorageMeter(); applyStorageMeter()
+        nodeCtrl.refreshNodeStatus(); applyNodeStatus()
+        fetchLiveBrokerStatus()
+    }
+
+    // ── Applying ViewModel state to views ──
+
+    private fun applyStorageMeter() {
+        val data = vm.storageMeterData
+        binding.storageScopeBadgeText.text = getString(R.string.storage_scope_all)
+        if (data != null) {
+            val usedF = getString(R.string.storage_gb_format, data.usedGb)
+            val freeF = getString(R.string.storage_gb_format, data.freeGb)
+            val totalF = getString(R.string.storage_gb_format, data.totalGb)
+            binding.storageProgressBar.progress = data.usedPercent
+            binding.storageMainText.text = getString(R.string.storage_main_format, data.usedPercent, usedF, totalF)
+            binding.storageUsedText.text = usedF; binding.storageFreeText.text = freeF; binding.storageTotalText.text = totalF
+        } else {
+            binding.storageMainText.text = getString(R.string.storage_calc_error)
+        }
+    }
+
+    private fun applyNodeStatus() {
+        nodeCtrl.refreshNodeStatus()
+        if (!vm.nodePaired) {
+            binding.nodeStatusText.text = getString(R.string.node_status_not_paired)
+            binding.nodeBrokerInfoText.text = getString(R.string.node_info_not_paired)
+            binding.btnToggleNode.text = getString(R.string.btn_start_node); binding.btnToggleNode.isEnabled = false; binding.btnSyncNow.isEnabled = false
+            binding.layoutPairedClientDetails.visibility = View.GONE; binding.connectedClientsEmptyText.visibility = View.VISIBLE
+        } else {
+            binding.layoutPairedClientDetails.visibility = View.VISIBLE; binding.connectedClientsEmptyText.visibility = View.GONE
+            binding.nodeBrokerInfoText.text = getString(R.string.node_broker_format, vm.brokerUrl ?: "")
+            binding.btnToggleNode.isEnabled = true
+            if (vm.nodeRunning) {
+                binding.nodeStatusText.text = getString(R.string.node_status_active); binding.btnToggleNode.text = getString(R.string.btn_stop_node); binding.btnSyncNow.isEnabled = true
+            } else {
+                binding.nodeStatusText.text = getString(R.string.node_status_stopped); binding.btnToggleNode.text = getString(R.string.btn_start_node); binding.btnSyncNow.isEnabled = false
+            }
+            binding.lastActiveTimestampText.text = getString(R.string.last_synced_format, vm.lastSyncTime)
+            binding.clientPlatformText.text = getString(R.string.client_platform_title)
+            binding.clientSecurityInfoText.text = getString(R.string.client_security_title)
+            renderConnectedAccounts(vm.connectedUsers)
+        }
+    }
+
+    private fun renderConnectedAccounts(users: List<ConnectedUser>) {
+        binding.layoutConnectedAccountsList.removeAllViews()
+        if (users.isEmpty()) return
+        for (user in users) {
+            val itemView = layoutInflater.inflate(R.layout.item_connected_user, binding.layoutConnectedAccountsList, false)
+            itemView.findViewById<TextView>(R.id.userAvatarIcon).text = "👤"
+            itemView.findViewById<TextView>(R.id.userEmailText).text = user.email
+            itemView.findViewById<TextView>(R.id.userAccessScopeText).text = when (user.scope.mode) {
+                "NONE" -> getString(R.string.user_access_scope_none)
+                "CUSTOM_FILE" -> getString(R.string.user_access_scope_file, user.scope.name ?: user.scope.path ?: "Selected file")
+                "CUSTOM_FOLDER" -> getString(R.string.user_access_scope_folder, user.scope.name ?: user.scope.path ?: "Selected folder")
+                else -> getString(R.string.user_access_scope_all)
+            }
+            val tvLive = itemView.findViewById<TextView>(R.id.userLiveStatusText)
+            val tvLast = itemView.findViewById<TextView>(R.id.userLastActiveText)
+            val userIsLive = user.sharingEnabled && user.isLive && vm.nodeRunning
+            if (!user.sharingEnabled) {
+                tvLive.text = getString(R.string.user_live_status_stopped); tvLive.setTextColor(getColor(R.color.amber))
+                tvLast.text = getString(R.string.user_last_active_sharing_stopped); tvLast.setTextColor(getColor(R.color.text_secondary_light))
+            } else if (userIsLive) {
+                tvLive.text = getString(R.string.user_live_status_live); tvLive.setTextColor(getColor(R.color.emerald))
+                tvLast.text = getString(R.string.user_last_active_now); tvLast.setTextColor(getColor(R.color.emerald))
+            } else if (vm.nodeRunning) {
+                tvLive.text = getString(R.string.user_live_status_offline); tvLive.setTextColor(getColor(R.color.text_secondary_light))
+                tvLast.text = getString(R.string.user_last_active_format, vm.formatLastSeenOrTimestamp(user.lastSeenAt, storage.lastLiveTimestamp))
+                tvLast.setTextColor(getColor(R.color.text_secondary_light))
+            } else {
+                tvLive.text = getString(R.string.user_live_status_paused); tvLive.setTextColor(getColor(R.color.amber))
+                tvLast.text = getString(R.string.user_last_active_format, vm.formatLastSeenOrTimestamp(user.lastSeenAt, storage.lastLiveTimestamp))
+                tvLast.setTextColor(getColor(R.color.text_secondary_light))
+            }
+            itemView.setOnClickListener { showClientDetailsDialog(user) }
+            binding.layoutConnectedAccountsList.addView(itemView)
+        }
+    }
+
+    // ── Broker status fetch (delegates to controller) ──
+
+    private fun fetchLiveBrokerStatus() {
+        accountsCtrl.fetchLiveBrokerStatus(
+            onUpdateWidget = { StashlyWidgetProvider.updateAll(this) },
+            onRenderUsers = { renderConnectedAccounts(it) },
+            onUpdateTimestamp = { binding.lastActiveTimestampText.text = getString(R.string.last_synced_format, it) },
+            onUnlinked = { handleConnectionRemoved() }
+        )
+    }
+
+    // ── Dialogs ──
 
     private fun showPendingClientRemovedDialog() {
         val removedUserId = storage.pendingClientRemovedUserId ?: return
         if (clientRemovedDialog?.isShowing == true) return
-
         val removedEmail = runCatching {
-            val users = JSONArray(storage.connectedUsersJson ?: "[]")
-            (0 until users.length())
-                .map { users.getJSONObject(it) }
-                .firstOrNull { it.optString("userId") == removedUserId }
-                ?.optString("email")
+            val users = org.json.JSONArray(storage.connectedUsersJson ?: "[]")
+            (0 until users.length()).map { users.getJSONObject(it) }.firstOrNull { it.optString("userId") == removedUserId }?.optString("email")
         }.getOrNull().orEmpty()
-        val clientLabel = removedEmail.ifEmpty { "A client" }
-
         clientRemovedDialog = AlertDialog.Builder(this)
             .setTitle(getString(R.string.dialog_client_removed_title))
-            .setMessage(getString(R.string.dialog_client_removed_msg, clientLabel))
+            .setMessage(getString(R.string.dialog_client_removed_msg, removedEmail.ifEmpty { "A client" }))
             .setPositiveButton(getString(R.string.dialog_btn_ok)) { dialog, _ ->
-                storage.pendingClientRemovedUserId = null
-                dialog.dismiss()
-                clientRemovedDialog = null
-                if (storage.pendingFinalRemovalReason != null) {
-                    storage.pendingFinalRemovalReason = null
-                    handleConnectionRemoved()
-                }
-            }
-            .setCancelable(false)
-            .create()
+                storage.pendingClientRemovedUserId = null; dialog.dismiss(); clientRemovedDialog = null
+                if (storage.pendingFinalRemovalReason != null) { storage.pendingFinalRemovalReason = null; handleConnectionRemoved() }
+            }.setCancelable(false).create()
         clientRemovedDialog?.show()
     }
 
     private fun handleConnectionRemoved() {
         stopService(Intent(this, StorageNodeService::class.java))
-        val manager = getSystemService(NotificationManager::class.java)
-        manager?.cancel(1)
-        storage.clear()
-        refreshAll()
-        showPage(1)
+        getSystemService(NotificationManager::class.java)?.cancel(1)
+        storage.clear(); refreshAll(); showPage(1)
         Toast.makeText(this, getString(R.string.toast_node_unlinked), Toast.LENGTH_LONG).show()
-
         if (!isFinishing && !isDestroyed) {
-            AlertDialog.Builder(this)
-                .setTitle(getString(R.string.dialog_unlinked_title))
-                .setMessage(getString(R.string.dialog_unlinked_msg))
-                .setPositiveButton(getString(R.string.dialog_btn_ok), null)
-                .show()
-        }
-    }
-
-    private fun showPage(pageIndex: Int) {
-        mainViewModel.selectedPage = pageIndex
-        binding.pageStorage.visibility = if (pageIndex == 0) View.VISIBLE else View.GONE
-        binding.pageConnect.visibility = if (pageIndex == 1) View.VISIBLE else View.GONE
-        binding.pageSettings.visibility = if (pageIndex == 2) View.VISIBLE else View.GONE
-
-        val menuId = when (pageIndex) {
-            0 -> R.id.nav_storage
-            1 -> R.id.nav_connect
-            else -> R.id.nav_settings
-        }
-
-        binding.bottomNavigation.menu.findItem(menuId)?.isChecked = true
-
-        binding.topAppBar.title = when (pageIndex) {
-            0 -> getString(R.string.title_storage_clients)
-            1 -> getString(R.string.title_connect_new)
-            else -> getString(R.string.title_settings_perms)
-        }
-    }
-
-    private fun refreshAll() {
-        refreshStorageMeter()
-        refreshNodeStatus()
-        fetchLiveBrokerStatus()
-    }
-
-    private fun refreshStorageMeter() {
-        try {
-            binding.storageScopeBadgeText.text = getString(R.string.storage_scope_all)
-
-            val path = Environment.getDataDirectory()
-            val stat = StatFs(path.path)
-            val blockSize = stat.blockSizeLong
-            val totalBlocks = stat.blockCountLong
-            val availableBlocks = stat.availableBlocksLong
-
-            val totalBytes = totalBlocks * blockSize
-            val freeBytes = availableBlocks * blockSize
-            val usedBytes = totalBytes - freeBytes
-
-            val usedGb = usedBytes.toDouble() / (1024 * 1024 * 1024)
-            val freeGb = freeBytes.toDouble() / (1024 * 1024 * 1024)
-            val totalGb = totalBytes.toDouble() / (1024 * 1024 * 1024)
-
-            val usedPercent = if (totalBytes > 0) ((usedBytes.toDouble() / totalBytes) * 100).toInt() else 0
-
-            val usedFormatted = getString(R.string.storage_gb_format, usedGb)
-            val freeFormatted = getString(R.string.storage_gb_format, freeGb)
-            val totalFormatted = getString(R.string.storage_gb_format, totalGb)
-
-            binding.storageProgressBar.progress = usedPercent
-            binding.storageMainText.text = getString(R.string.storage_main_format, usedPercent, usedFormatted, totalFormatted)
-            binding.storageUsedText.text = usedFormatted
-            binding.storageFreeText.text = freeFormatted
-            binding.storageTotalText.text = totalFormatted
-        } catch (_: Exception) {
-            binding.storageMainText.text = getString(R.string.storage_calc_error)
-        }
-    }
-
-    private fun refreshNodeStatus() {
-        val isPaired = storage.isPaired
-        val isRunning = isPaired && storage.nodeEnabled
-
-        if (!isPaired) {
-            binding.nodeStatusText.text = getString(R.string.node_status_not_paired)
-            binding.nodeBrokerInfoText.text = getString(R.string.node_info_not_paired)
-            binding.btnToggleNode.text = getString(R.string.btn_start_node)
-            binding.btnToggleNode.isEnabled = false
-            binding.btnSyncNow.isEnabled = false
-
-            binding.layoutPairedClientDetails.visibility = View.GONE
-            binding.connectedClientsEmptyText.visibility = View.VISIBLE
-        } else {
-            binding.layoutPairedClientDetails.visibility = View.VISIBLE
-            binding.connectedClientsEmptyText.visibility = View.GONE
-
-            binding.nodeBrokerInfoText.text = getString(R.string.node_broker_format, storage.brokerBaseUrl ?: "")
-            binding.btnToggleNode.isEnabled = true
-
-            if (isRunning) {
-                binding.nodeStatusText.text = getString(R.string.node_status_active)
-                binding.btnToggleNode.text = getString(R.string.btn_stop_node)
-                binding.btnSyncNow.isEnabled = true
-            } else {
-                binding.nodeStatusText.text = getString(R.string.node_status_stopped)
-                binding.btnToggleNode.text = getString(R.string.btn_start_node)
-                binding.btnSyncNow.isEnabled = false
-            }
-
-            // Top client & security specification & sync timestamp
-            val now = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-            binding.lastActiveTimestampText.text = getString(R.string.last_synced_format, now)
-            binding.clientPlatformText.text = getString(R.string.client_platform_title)
-            binding.clientSecurityInfoText.text = getString(R.string.client_security_title)
-
-            // Display Connected Accounts Cards
-            val cachedUsers = loadCachedConnectedUsers()
-            renderConnectedAccounts(cachedUsers)
-        }
-    }
-
-    private fun formatLastLive(timestamp: Long): String {
-        return if (timestamp > 0) {
-            val sdf = SimpleDateFormat("dd MMM, HH:mm:ss", Locale.getDefault())
-            sdf.format(Date(timestamp))
-        } else {
-            getString(R.string.last_live_never)
-        }
-    }
-
-    private fun formatLastSeenOrTimestamp(lastSeenIso: String?, localTimestamp: Long): String {
-        if (!lastSeenIso.isNullOrEmpty()) {
-            try {
-                return DateTimeFormatter.ofPattern("dd MMM yyyy, hh:mm a", Locale.getDefault())
-                    .withZone(ZoneId.systemDefault())
-                    .format(Instant.parse(lastSeenIso))
-            } catch (_: Exception) {
-                return lastSeenIso
-            }
-        }
-        return formatLastLive(localTimestamp)
-    }
-
-    private fun loadCachedConnectedUsers(): List<ConnectedUser> {
-        val jsonStr = storage.connectedUsersJson ?: return emptyList()
-        val list = mutableListOf<ConnectedUser>()
-        try {
-            val array = JSONArray(jsonStr)
-            for (i in 0 until array.length()) {
-                val obj = array.getJSONObject(i)
-                list.add(
-                    ConnectedUser(
-                        userId = obj.optString("userId").ifEmpty { null },
-                        email = obj.getString("email"),
-                        role = obj.optString("role", "viewer"),
-                        scope = AccessScope(
-                            mode = obj.optString("scopeMode", "ALL"),
-                            path = obj.optString("scopePath").ifEmpty { null },
-                            name = obj.optString("scopeName").ifEmpty { null }
-                        ),
-                        sharingEnabled = obj.optBoolean("sharingEnabled", true),
-                        isLive = obj.optBoolean("isLive", false),
-                        lastSeenAt = obj.optString("lastSeenAt").ifEmpty { null },
-                        connectedAt = obj.optString("connectedAt").ifEmpty { null }
-                    )
-                )
-            }
-        } catch (_: Exception) {}
-        return list
-    }
-
-    private fun renderConnectedAccounts(users: List<ConnectedUser>) {
-        binding.layoutConnectedAccountsList.removeAllViews()
-        val isRunning = storage.isPaired && storage.nodeEnabled
-
-        if (users.isEmpty()) return
-
-        for (user in users) {
-            val itemView = layoutInflater.inflate(R.layout.item_connected_user, binding.layoutConnectedAccountsList, false)
-            val tvAvatar = itemView.findViewById<TextView>(R.id.userAvatarIcon)
-            val tvEmail = itemView.findViewById<TextView>(R.id.userEmailText)
-            val tvLiveStatus = itemView.findViewById<TextView>(R.id.userLiveStatusText)
-            val tvLastActive = itemView.findViewById<TextView>(R.id.userLastActiveText)
-            val tvScope = itemView.findViewById<TextView>(R.id.userAccessScopeText)
-
-            tvAvatar.text = "👤"
-            tvEmail.text = user.email
-            tvScope.text = when (user.scope.mode) {
-                "NONE" -> getString(R.string.user_access_scope_none)
-                "CUSTOM_FILE" -> getString(
-                    R.string.user_access_scope_file,
-                    user.scope.name ?: user.scope.path ?: "Selected file"
-                )
-                "CUSTOM_FOLDER" -> getString(
-                    R.string.user_access_scope_folder,
-                    user.scope.name ?: user.scope.path ?: "Selected folder"
-                )
-                else -> getString(R.string.user_access_scope_all)
-            }
-
-            val userIsLive = user.sharingEnabled && user.isLive && isRunning
-            if (!user.sharingEnabled) {
-                tvLiveStatus.text = getString(R.string.user_live_status_stopped)
-                tvLiveStatus.setTextColor(getColor(R.color.amber))
-                tvLastActive.text = getString(R.string.user_last_active_sharing_stopped)
-                tvLastActive.setTextColor(getColor(R.color.text_secondary_light))
-            } else if (userIsLive) {
-                tvLiveStatus.text = getString(R.string.user_live_status_live)
-                tvLiveStatus.setTextColor(getColor(R.color.emerald))
-                tvLastActive.text = getString(R.string.user_last_active_now)
-                tvLastActive.setTextColor(getColor(R.color.emerald))
-            } else if (isRunning) {
-                tvLiveStatus.text = getString(R.string.user_live_status_offline)
-                tvLiveStatus.setTextColor(getColor(R.color.text_secondary_light))
-                val lastSeenFormatted = formatLastSeenOrTimestamp(user.lastSeenAt, storage.lastLiveTimestamp)
-                tvLastActive.text = getString(R.string.user_last_active_format, lastSeenFormatted)
-                tvLastActive.setTextColor(getColor(R.color.text_secondary_light))
-            } else {
-                tvLiveStatus.text = getString(R.string.user_live_status_paused)
-                tvLiveStatus.setTextColor(getColor(R.color.amber))
-                val lastSeenFormatted = formatLastSeenOrTimestamp(user.lastSeenAt, storage.lastLiveTimestamp)
-                tvLastActive.text = getString(R.string.user_last_active_format, lastSeenFormatted)
-                tvLastActive.setTextColor(getColor(R.color.text_secondary_light))
-            }
-
-            itemView.setOnClickListener { showClientDetailsDialog(user) }
-
-            binding.layoutConnectedAccountsList.addView(itemView)
+            AlertDialog.Builder(this).setTitle(getString(R.string.dialog_unlinked_title)).setMessage(getString(R.string.dialog_unlinked_msg))
+                .setPositiveButton(getString(R.string.dialog_btn_ok), null).show()
         }
     }
 
     private fun showClientDetailsDialog(user: ConnectedUser) {
-        val status = when {
-            !user.sharingEnabled -> getString(R.string.client_status_sharing_stopped)
-            user.isLive -> getString(R.string.client_status_online)
-            else -> getString(R.string.client_status_offline)
-        }
-        val lastSeen = if (user.isLive && user.sharingEnabled) {
-            getString(R.string.client_last_seen_now)
-        } else {
-            getString(R.string.client_last_seen_at, formatLastSeenOrTimestamp(user.lastSeenAt, storage.lastLiveTimestamp))
-        }
-        val connectedSince = formatLastSeenOrTimestamp(user.connectedAt, 0L)
-        val dialog = AlertDialog.Builder(this)
-            .setTitle(user.email)
-            .setMessage(getString(R.string.client_details_msg, status, lastSeen, connectedSince))
+        val status = when { !user.sharingEnabled -> getString(R.string.client_status_sharing_stopped); user.isLive -> getString(R.string.client_status_online); else -> getString(R.string.client_status_offline) }
+        val lastSeen = if (user.isLive && user.sharingEnabled) getString(R.string.client_last_seen_now) else getString(R.string.client_last_seen_at, vm.formatLastSeenOrTimestamp(user.lastSeenAt, storage.lastLiveTimestamp))
+        AlertDialog.Builder(this).setTitle(user.email)
+            .setMessage(getString(R.string.client_details_msg, status, lastSeen, vm.formatLastSeenOrTimestamp(user.connectedAt, 0L)))
             .setNegativeButton(getString(R.string.dialog_btn_cancel), null)
-            .setNeutralButton(getString(R.string.btn_remove_client_connection)) { _, _ ->
-                showClientActionConfirmation(user, removeConnection = true)
-            }
-            .setPositiveButton(getString(if (user.sharingEnabled) R.string.btn_stop_sharing else R.string.btn_start_sharing)) { _, _ ->
-                showClientActionConfirmation(user, removeConnection = false)
-            }
-            .setCancelable(true)
-            .create()
-        dialog.show()
+            .setNeutralButton(getString(R.string.btn_remove_client_connection)) { _, _ -> showClientActionConfirmation(user, removeConnection = true) }
+            .setPositiveButton(getString(if (user.sharingEnabled) R.string.btn_stop_sharing else R.string.btn_start_sharing)) { _, _ -> showClientActionConfirmation(user, removeConnection = false) }
+            .setCancelable(true).create().show()
     }
 
     private fun showClientActionConfirmation(user: ConnectedUser, removeConnection: Boolean) {
-        val actionLabel = if (removeConnection) {
-            getString(R.string.btn_remove_client_connection)
-        } else if (user.sharingEnabled) {
-            getString(R.string.btn_stop_sharing)
-        } else {
-            getString(R.string.btn_start_sharing)
-        }
+        val actionLabel = if (removeConnection) getString(R.string.btn_remove_client_connection) else if (user.sharingEnabled) getString(R.string.btn_stop_sharing) else getString(R.string.btn_start_sharing)
         AlertDialog.Builder(this)
             .setTitle(getString(R.string.dialog_confirm_client_action_title))
-            .setMessage(
-                getString(
-                    if (removeConnection) R.string.dialog_confirm_remove_client_msg
-                    else R.string.dialog_confirm_sharing_msg,
-                    user.email,
-                    actionLabel
-                )
-            )
+            .setMessage(getString(if (removeConnection) R.string.dialog_confirm_remove_client_msg else R.string.dialog_confirm_sharing_msg, user.email, actionLabel))
             .setNegativeButton(getString(R.string.dialog_btn_cancel), null)
             .setPositiveButton(actionLabel) { _, _ ->
-                if (removeConnection) {
-                    removeClientConnection(user)
-                } else {
-                    setClientSharing(user, !user.sharingEnabled)
-                }
-            }
-            .setCancelable(true)
-            .show()
-    }
-
-    private fun setClientSharing(user: ConnectedUser, enabled: Boolean) {
-        val brokerUrl = storage.brokerBaseUrl ?: return
-        val deviceToken = storage.deviceToken ?: return
-        val targetUserId = user.userId ?: return
-        CoroutineScope(Dispatchers.Main).launch {
-            try {
-                withContext(Dispatchers.IO) {
-                    PairingRepository.setClientSharing(brokerUrl, deviceToken, targetUserId, enabled)
-                }
-                fetchLiveBrokerStatus()
-                Toast.makeText(
-                    this@MainActivity,
-                    getString(if (enabled) R.string.toast_client_sharing_started else R.string.toast_client_sharing_stopped),
-                    Toast.LENGTH_SHORT
-                ).show()
-            } catch (e: Exception) {
-                Toast.makeText(this@MainActivity, getString(R.string.toast_access_scope_error, e.message ?: ""), Toast.LENGTH_LONG).show()
-            }
-        }
-    }
-
-    private fun removeClientConnection(user: ConnectedUser) {
-        val brokerUrl = storage.brokerBaseUrl ?: return
-        val deviceToken = storage.deviceToken ?: return
-        val targetUserId = user.userId ?: return
-        CoroutineScope(Dispatchers.Main).launch {
-            try {
-                withContext(Dispatchers.IO) {
-                    PairingRepository.removeClientAccess(brokerUrl, deviceToken, targetUserId)
-                }
-                fetchLiveBrokerStatus()
-                Toast.makeText(this@MainActivity, getString(R.string.toast_client_connection_removed), Toast.LENGTH_SHORT).show()
-            } catch (e: Exception) {
-                Toast.makeText(this@MainActivity, getString(R.string.toast_access_scope_error, e.message ?: ""), Toast.LENGTH_LONG).show()
-            }
-        }
-    }
-
-    private fun fetchLiveBrokerStatus() {
-        val brokerUrl = storage.brokerBaseUrl ?: return
-        val deviceToken = storage.deviceToken ?: return
-        if (!storage.isPaired) return
-
-        CoroutineScope(Dispatchers.IO).launch {
-            try {
-                val selfInfo = PairingRepository.fetchSelfInfo(brokerUrl, deviceToken)
-                withContext(Dispatchers.Main) {
-                    val usersJson = JSONArray().apply {
-                        selfInfo.users.forEach { u ->
-                            put(JSONObject().apply {
-                                put("email", u.email)
-                                if (u.userId != null) put("userId", u.userId)
-                                put("role", u.role)
-                                put("scopeMode", u.scope.mode)
-                                if (u.scope.path != null) put("scopePath", u.scope.path)
-                                if (u.scope.name != null) put("scopeName", u.scope.name)
-                                put("sharingEnabled", u.sharingEnabled)
-                                put("isLive", u.isLive)
-                                if (u.lastSeenAt != null) put("lastSeenAt", u.lastSeenAt)
-                                if (u.connectedAt != null) put("connectedAt", u.connectedAt)
-                            })
-                        }
-                    }.toString()
-                    storage.connectedUsersJson = usersJson
-                    StashlyWidgetProvider.updateAll(this@MainActivity)
-                    if (selfInfo.users.isNotEmpty() && storage.userEmail.isNullOrEmpty()) {
-                        storage.userEmail = selfInfo.users.first().email
-                    }
-                    selfInfo.users.firstOrNull { it.userId == storage.currentUserId || it.email == storage.userEmail }?.let { current ->
-                        if (current.role == "owner" && current.userId != null) {
-                            storage.ownerUserId = current.userId
-                            storage.ownerDeviceToken = storage.deviceToken
-                        }
-                    }
-                    renderConnectedAccounts(selfInfo.users)
-                    if (selfInfo.isLive) {
-                        storage.isLive = true
-                    }
-                    val now = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-                    binding.lastActiveTimestampText.text = getString(R.string.last_synced_format, now)
-                }
-            } catch (e: Exception) {
-                val errorMsg = e.message.orEmpty()
-                if (errorMsg.contains("401") || errorMsg.contains("404") || errorMsg.contains("Device not found", ignoreCase = true) || errorMsg.contains("Invalid", ignoreCase = true)) {
-                    withContext(Dispatchers.Main) {
-                        handleConnectionRemoved()
-                    }
-                }
-            }
-        }
-    }
-
-    private data class FolderSelection(val virtualPath: String, val displayName: String, val localPath: String)
-
-    private fun getFolderSelection(uri: Uri): FolderSelection {
-        val docId = try {
-            DocumentsContract.getTreeDocumentId(uri)
-        } catch (_: Exception) {
-            uri.lastPathSegment ?: ""
-        }
-
-        val split = docId.split(":")
-        val type = split.getOrNull(0) ?: "primary"
-        val relativePath = if (split.size > 1) split[1].trim('/') else ""
-        val displayName = relativePath.substringAfterLast('/').ifEmpty { type }
-        val virtualPath = if (relativePath.isEmpty()) "/" else "/$relativePath"
-        val localPath = if (type.equals("primary", ignoreCase = true)) {
-            File(Environment.getExternalStorageDirectory(), relativePath).absolutePath
-        } else {
-            "/storage/$type/$relativePath"
-        }
-        return FolderSelection(virtualPath, displayName, localPath)
-    }
-
-    private fun handlePairingScopeFolder(uri: Uri) {
-        val pairing = mainViewModel.pendingScopePairing ?: return
-        try {
-            contentResolver.takePersistableUriPermission(
-                uri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-            )
-        } catch (_: Exception) {}
-        val selection = getFolderSelection(uri)
-        savePairingScope(pairing, AccessScope("CUSTOM_FOLDER", selection.virtualPath, selection.displayName))
-    }
-
-    private fun handlePairingScopeFile(uri: Uri) {
-        val pairing = mainViewModel.pendingScopePairing ?: return
-        try {
-            contentResolver.takePersistableUriPermission(
-                uri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION
-            )
-        } catch (_: Exception) {}
-        val documentId = runCatching { DocumentsContract.getDocumentId(uri) }.getOrNull() ?: uri.lastPathSegment.orEmpty()
-        val split = documentId.split(":")
-        val relativePath = split.getOrNull(1)?.trim('/') ?: documentId.trim('/')
-        val virtualPath = if (relativePath.isEmpty()) "/" else "/$relativePath"
-        val displayName = relativePath.substringAfterLast('/').ifEmpty { "Selected file" }
-        savePairingScope(pairing, AccessScope("CUSTOM_FILE", virtualPath, displayName))
+                if (removeConnection) accountsCtrl.removeClientConnection(user,
+                    onSuccess = { Toast.makeText(this, getString(R.string.toast_client_connection_removed), Toast.LENGTH_SHORT).show() },
+                    onRefresh = { fetchLiveBrokerStatus() },
+                    onError = { Toast.makeText(this, getString(R.string.toast_access_scope_error, it), Toast.LENGTH_LONG).show() })
+                else accountsCtrl.setClientSharing(user, !user.sharingEnabled,
+                    onSuccess = { enabled -> Toast.makeText(this, getString(if (enabled) R.string.toast_client_sharing_started else R.string.toast_client_sharing_stopped), Toast.LENGTH_SHORT).show() },
+                    onRefresh = { fetchLiveBrokerStatus() },
+                    onError = { Toast.makeText(this, getString(R.string.toast_access_scope_error, it), Toast.LENGTH_LONG).show() })
+            }.setCancelable(true).show()
     }
 
     private fun showAccessScopeDialog(pairing: PairingResult) {
-        mainViewModel.pendingScopeTargetUserId = pairing.userId
-        val optionLayout = android.widget.LinearLayout(this).apply {
-            orientation = android.widget.LinearLayout.VERTICAL
-            setPadding(32, 8, 32, 0)
-        }
+        vm.pendingScopeTargetUserId = pairing.userId
+        val optionLayout = android.widget.LinearLayout(this).apply { orientation = android.widget.LinearLayout.VERTICAL; setPadding(32, 8, 32, 0) }
         lateinit var dialog: AlertDialog
         fun addOption(label: String, action: () -> Unit) {
-            optionLayout.addView(android.widget.Button(this).apply {
-                text = label
-                setOnClickListener {
-                    dialog.dismiss()
-                    action()
-                }
-            })
+            optionLayout.addView(android.widget.Button(this).apply { text = label; setOnClickListener { dialog.dismiss(); action() } })
         }
-        addOption(getString(R.string.scope_option_all)) {
-            withStorageAccess { savePairingScope(pairing, AccessScope()) }
-        }
-        addOption(getString(R.string.scope_option_folder)) {
-            withStorageAccess { beginFolderScopePicker(pairing) }
-        }
-        addOption(getString(R.string.scope_option_file)) {
-            withStorageAccess { beginFileScopePicker(pairing) }
-        }
-
-        dialog = AlertDialog.Builder(this)
-            .setTitle(getString(R.string.dialog_access_scope_title))
-            .setMessage(getString(R.string.dialog_access_scope_msg, pairing.userEmail ?: "this client"))
-            .setView(optionLayout)
-            .setNegativeButton(getString(R.string.dialog_btn_cancel)) { _, _ ->
-                mainViewModel.pendingScopePairing = null
-                if (mainViewModel.pendingScopeIsPairing) storage.nodeEnabled = false
-            }
-            .setCancelable(false)
-            .create()
+        addOption(getString(R.string.scope_option_all)) { SystemPermissionCoordinator.withStorageAccess({ doSavePairingScope(pairing, AccessScope()) }, ::showStorageAccessRequired) }
+        addOption(getString(R.string.scope_option_folder)) { SystemPermissionCoordinator.withStorageAccess({ beginFolderScopePicker(pairing) }, ::showStorageAccessRequired) }
+        addOption(getString(R.string.scope_option_file)) { SystemPermissionCoordinator.withStorageAccess({ beginFileScopePicker(pairing) }, ::showStorageAccessRequired) }
+        dialog = AlertDialog.Builder(this).setTitle(getString(R.string.dialog_access_scope_title)).setMessage(getString(R.string.dialog_access_scope_msg, pairing.userEmail ?: "this client")).setView(optionLayout)
+            .setNegativeButton(getString(R.string.dialog_btn_cancel)) { _, _ -> vm.pendingScopePairing = null; if (vm.pendingScopeIsPairing) storage.nodeEnabled = false }
+            .setCancelable(false).create()
         dialog.show()
     }
 
+    private fun showStorageAccessRequired() {
+        AlertDialog.Builder(this).setTitle("Device storage access required")
+            .setMessage("Allow Stashly full device storage access before assigning files or folders to a client.")
+            .setPositiveButton("Open settings") { _, _ ->
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) startActivity(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply { data = Uri.parse("package:$packageName") })
+            }.setNegativeButton(getString(R.string.dialog_btn_cancel), null).show()
+    }
+
+    // ── Scope picker launchers ──
+
     private fun beginFolderScopePicker(pairing: PairingResult) {
-        mainViewModel.pendingScopePairing = pairing
-        try {
-            folderPickerLauncher.launch(null)
-        } catch (e: Exception) {
-            mainViewModel.pendingScopePairing = null
-            Toast.makeText(this, getString(R.string.toast_folder_picker_error, e.message ?: ""), Toast.LENGTH_SHORT).show()
-        }
+        vm.pendingScopePairing = pairing
+        try { folderPickerLauncher.launch(null) }
+        catch (e: Exception) { vm.pendingScopePairing = null; Toast.makeText(this, getString(R.string.toast_folder_picker_error, e.message ?: ""), Toast.LENGTH_SHORT).show() }
     }
 
     private fun beginFileScopePicker(pairing: PairingResult) {
-        mainViewModel.pendingScopePairing = pairing
-        try {
-            filePickerLauncher.launch(arrayOf("*/*"))
-        } catch (e: Exception) {
-            mainViewModel.pendingScopePairing = null
-            Toast.makeText(this, getString(R.string.toast_folder_picker_error, e.message ?: ""), Toast.LENGTH_SHORT).show()
-        }
+        vm.pendingScopePairing = pairing
+        try { filePickerLauncher.launch(arrayOf("*/*")) }
+        catch (e: Exception) { vm.pendingScopePairing = null; Toast.makeText(this, getString(R.string.toast_folder_picker_error, e.message ?: ""), Toast.LENGTH_SHORT).show() }
     }
 
-    private fun savePairingScope(pairing: PairingResult, scope: AccessScope) {
-        if (!hasFullStorageAccess()) {
-            showStorageAccessRequired()
-            return
-        }
-        val brokerUrl = storage.brokerBaseUrl ?: return
-        val deviceToken = pairing.deviceToken
-        val isPairing = mainViewModel.pendingScopeIsPairing
-        val targetUserId = mainViewModel.pendingScopeTargetUserId
-        mainViewModel.pendingScopePairing = null
-
-        CoroutineScope(Dispatchers.Main).launch {
-            try {
-                withContext(Dispatchers.IO) {
-                    PairingRepository.updateAccessScope(brokerUrl, deviceToken, scope, targetUserId)
-                }
-                storage.nodeEnabled = true
-                startForegroundService(Intent(this@MainActivity, StorageNodeService::class.java))
-                Toast.makeText(
-                    this@MainActivity,
-                    getString(if (isPairing) R.string.toast_paired_success else R.string.toast_access_scope_saved),
-                    Toast.LENGTH_LONG
-                ).show()
-                if (isPairing) {
-                    binding.inputPairingToken.setText("")
-                    showPage(0)
-                }
-                refreshAll()
-            } catch (e: Exception) {
-                Toast.makeText(this@MainActivity, getString(R.string.toast_access_scope_error, e.message ?: ""), Toast.LENGTH_LONG).show()
-            }
-        }
-    }
-
-    private fun hasFullStorageAccess(): Boolean = SystemPermissionCoordinator.hasFullStorageAccess()
-
-    private fun withStorageAccess(action: () -> Unit) {
-        if (hasFullStorageAccess()) action() else showStorageAccessRequired()
-    }
-
-    private fun showStorageAccessRequired() {
-        AlertDialog.Builder(this)
-            .setTitle("Device storage access required")
-            .setMessage("Allow Stashly full device storage access before assigning files or folders to a client.")
-            .setPositiveButton("Open settings") { _, _ ->
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    startActivity(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
-                        data = Uri.parse("package:$packageName")
-                    })
-                }
-            }
-            .setNegativeButton(getString(R.string.dialog_btn_cancel), null)
-            .show()
-    }
-
-    private fun onToggleNodeClicked() {
-        if (!storage.isPaired) {
-            Toast.makeText(this, getString(R.string.toast_pair_first), Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        if (storage.nodeEnabled) {
-            storage.nodeEnabled = false
-            stopService(Intent(this, StorageNodeService::class.java))
-            Toast.makeText(this, getString(R.string.toast_node_stopped), Toast.LENGTH_SHORT).show()
-        } else {
-            storage.nodeEnabled = true
-            startForegroundService(Intent(this, StorageNodeService::class.java))
-            Toast.makeText(this, getString(R.string.toast_node_started), Toast.LENGTH_SHORT).show()
-        }
-        refreshNodeStatus()
-    }
-
-    private fun onSyncNowClicked() {
-        if (!storage.isPaired) return
-        Toast.makeText(this, getString(R.string.toast_syncing), Toast.LENGTH_SHORT).show()
-        startForegroundService(
-            Intent(this, StorageNodeService::class.java).setAction(StorageNodeService.ACTION_SYNC_NOW)
+    private fun doSavePairingScope(pairing: PairingResult, scope: AccessScope) {
+        pairingCtrl.savePairingScope(pairing, scope,
+            onStartService = { startForegroundService(Intent(this, StorageNodeService::class.java)) },
+            onSuccess = { isPairing ->
+                Toast.makeText(this, getString(if (isPairing) R.string.toast_paired_success else R.string.toast_access_scope_saved), Toast.LENGTH_LONG).show()
+                if (isPairing) { binding.inputPairingToken.setText(""); showPage(0) }; refreshAll()
+            },
+            onError = { Toast.makeText(this, getString(R.string.toast_access_scope_error, it), Toast.LENGTH_LONG).show() }
         )
-        Toast.makeText(this, getString(R.string.toast_sync_success), Toast.LENGTH_SHORT).show()
-        refreshNodeStatus()
     }
+
+    // ── QR scanning ──
 
     private fun onScanQrClicked() {
-        val options = ScanOptions().apply {
-            setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-            setPrompt(getString(R.string.qr_scan_prompt))
-            setCameraId(0)
-            setBeepEnabled(false)
-            setBarcodeImageEnabled(false)
-            setOrientationLocked(false)
+        qrScanLauncher.launch(ScanOptions().apply {
+            setDesiredBarcodeFormats(ScanOptions.QR_CODE); setPrompt(getString(R.string.qr_scan_prompt))
+            setCameraId(0); setBeepEnabled(false); setBarcodeImageEnabled(false); setOrientationLocked(false)
             setCaptureActivity(PortraitCaptureActivity::class.java)
-        }
-        qrScanLauncher.launch(options)
+        })
     }
 
     private fun handleScannedQr(rawText: String) {
-        val text = rawText.trim()
-        if (binding.inputDeviceName.text.isNullOrEmpty()) {
-            binding.inputDeviceName.setText(Build.MODEL)
-        }
-        try {
-            // Case 1: Structured JSON payload {"type":"stashly_pair","brokerUrl":"...","token":"..."}
-            if (text.startsWith("{") && text.endsWith("}")) {
-                val json = JSONObject(text)
-                val url = json.optString("brokerUrl", "").trim()
-                val token = json.optString("token", "").trim()
-                if (url.isNotEmpty()) binding.inputBrokerUrl.setText(url)
-                if (token.isNotEmpty()) binding.inputPairingToken.setText(token)
-                Toast.makeText(this, getString(R.string.toast_qr_autopair), Toast.LENGTH_SHORT).show()
-                onPairClicked()
-                return
+        if (binding.inputDeviceName.text.isNullOrEmpty()) binding.inputDeviceName.setText(Build.MODEL)
+        when (val result = pairingCtrl.parseScannedQr(rawText, !binding.inputBrokerUrl.text.isNullOrEmpty())) {
+            is PairingFlowController.QrParseResult.AutoPair -> {
+                if (result.brokerUrl != null) binding.inputBrokerUrl.setText(result.brokerUrl)
+                if (result.token != null) binding.inputPairingToken.setText(result.token)
+                Toast.makeText(this, getString(R.string.toast_qr_autopair), Toast.LENGTH_SHORT).show(); onPairClicked()
             }
-
-            // Case 2: URL with query parameters: stashly://pair?url=...&token=...
-            if (text.contains("token=") || text.startsWith("http://") || text.startsWith("https://")) {
-                val uri = text.toUri()
-                val token = uri.getQueryParameter("token") ?: ""
-                val url = uri.getQueryParameter("url") ?: if (text.startsWith("http")) text else ""
-                if (url.isNotEmpty()) binding.inputBrokerUrl.setText(url)
-                if (token.isNotEmpty()) binding.inputPairingToken.setText(token)
-                Toast.makeText(this, getString(R.string.toast_qr_autopair), Toast.LENGTH_SHORT).show()
-                onPairClicked()
-                return
+            is PairingFlowController.QrParseResult.TokenOnly -> {
+                binding.inputPairingToken.setText(result.token)
+                Toast.makeText(this, getString(R.string.toast_qr_code_loaded, result.token), Toast.LENGTH_SHORT).show()
+                if (result.hasBrokerUrl) onPairClicked()
             }
-
-            // Case 3: Raw pairing code only (8-chars)
-            binding.inputPairingToken.setText(text.uppercase(Locale.ROOT))
-            Toast.makeText(this, getString(R.string.toast_qr_code_loaded, text), Toast.LENGTH_SHORT).show()
-            if (!binding.inputBrokerUrl.text.isNullOrEmpty()) {
-                onPairClicked()
-            }
-        } catch (e: Exception) {
-            Toast.makeText(this, getString(R.string.toast_qr_parse_error, e.message ?: ""), Toast.LENGTH_LONG).show()
+            is PairingFlowController.QrParseResult.Error ->
+                Toast.makeText(this, getString(R.string.toast_qr_parse_error, result.message), Toast.LENGTH_LONG).show()
         }
     }
+
+    // ── Pairing ──
 
     private fun onPairClicked() {
-        if (binding.inputDeviceName.text.isNullOrEmpty()) {
-            binding.inputDeviceName.setText(Build.MODEL)
-        }
-        var brokerUrl = binding.inputBrokerUrl.text?.toString()?.trim().orEmpty()
-        val deviceName = binding.inputDeviceName.text?.toString()?.trim().orEmpty()
-        val pairingToken = binding.inputPairingToken.text?.toString()?.trim()?.uppercase(Locale.ROOT).orEmpty()
-
-        if (brokerUrl.isEmpty() || deviceName.isEmpty() || pairingToken.isEmpty()) {
-            Toast.makeText(this, getString(R.string.toast_fill_fields), Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        // Do not create a broker connection that cannot serve files. The
-        // storage permission must be granted before pairing begins.
-        if (!hasFullStorageAccess()) {
-            showStorageAccessRequired()
-            return
-        }
-
-        if (!brokerUrl.startsWith("http://", ignoreCase = true) && !brokerUrl.startsWith("https://", ignoreCase = true)) {
-            brokerUrl = "http://$brokerUrl"
-        }
-        brokerUrl = brokerUrl.trimEnd('/')
-
-        binding.btnSubmitPair.isEnabled = false
-        binding.btnSubmitPair.text = getString(R.string.btn_pairing_progress)
-        pairingProgressDialog = AlertDialog.Builder(this)
-            .setTitle(getString(R.string.dialog_pairing_title))
-            .setMessage(getString(R.string.dialog_pairing_msg))
-            .setView(ProgressBar(this))
-            .setCancelable(false)
-            .show()
-
-        val targetUrl = brokerUrl
-        CoroutineScope(Dispatchers.Main).launch {
-            try {
-                val deviceInfo = readDeviceInfo()
-                val result = withContext(Dispatchers.IO) {
-                    PairingRepository.pair(
-                        targetUrl,
-                        pairingToken,
-                        deviceName,
-                        existingDeviceId = storage.deviceId,
-                        modelName = deviceInfo.modelName,
-                        modelNumber = deviceInfo.modelNumber,
-                        androidVersion = deviceInfo.androidVersion,
-                        osVersion = deviceInfo.osVersion,
-                        appVersion = deviceInfo.appVersion,
-                        batteryLevel = deviceInfo.batteryLevel,
-                        storageTotalMb = deviceInfo.storageTotalMb,
-                        storageFreeMb = deviceInfo.storageFreeMb
-                    )
-                }
-                storage.brokerBaseUrl = targetUrl
-                storage.deviceId = result.deviceId
-                storage.deviceToken = result.deviceToken
-                storage.currentUserId = result.userId
-                if (result.role == "owner") {
-                    storage.ownerUserId = result.userId
-                    storage.ownerDeviceToken = result.deviceToken
-                }
-                if (result.userEmail != null) {
-                    storage.userEmail = result.userEmail
-                }
-                // Create the node key immediately after pairing so it is available
-                // before the access-scope picker and the first file sync.
-                KeyManager(storage).getOrCreateMasterKey()
-
-                stopService(Intent(this@MainActivity, StorageNodeService::class.java))
-                storage.nodeEnabled = false
-                pairingProgressDialog?.dismiss()
-                pairingProgressDialog = null
-                mainViewModel.pendingScopeIsPairing = true
+        if (binding.inputDeviceName.text.isNullOrEmpty()) binding.inputDeviceName.setText(Build.MODEL)
+        pairingCtrl.executePairing(
+            context = this,
+            rawBrokerUrl = binding.inputBrokerUrl.text?.toString()?.trim().orEmpty(),
+            deviceName = binding.inputDeviceName.text?.toString()?.trim().orEmpty(),
+            rawPairingToken = binding.inputPairingToken.text?.toString()?.trim()?.uppercase(Locale.ROOT).orEmpty(),
+            onValidationError = { Toast.makeText(this, getString(R.string.toast_fill_fields), Toast.LENGTH_SHORT).show() },
+            onNeedsStoragePermission = { showStorageAccessRequired() },
+            onPairingStarted = {
+                binding.btnSubmitPair.isEnabled = false; binding.btnSubmitPair.text = getString(R.string.btn_pairing_progress)
+                pairingProgressDialog = AlertDialog.Builder(this).setTitle(getString(R.string.dialog_pairing_title)).setMessage(getString(R.string.dialog_pairing_msg)).setView(ProgressBar(this)).setCancelable(false).show()
+            },
+            onPairingSuccess = { result, _ ->
+                stopService(Intent(this, StorageNodeService::class.java))
+                pairingProgressDialog?.dismiss(); pairingProgressDialog = null
                 showAccessScopeDialog(result)
-            } catch (e: Exception) {
-                pairingProgressDialog?.dismiss()
-                pairingProgressDialog = null
-                val msg = if (e.message?.contains("Failed to connect", ignoreCase = true) == true) {
-                    getString(R.string.toast_pairing_error_network, targetUrl)
-                } else {
-                    getString(R.string.toast_pairing_error_general, e.message ?: "")
-                }
-                Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
-            } finally {
-                binding.btnSubmitPair.isEnabled = true
-                binding.btnSubmitPair.text = getString(R.string.btn_pair_submit)
-            }
-        }
-    }
-
-    private data class DeviceInfo(
-        val modelName: String,
-        val modelNumber: String,
-        val androidVersion: String,
-        val osVersion: String,
-        val appVersion: String,
-        val batteryLevel: Int?,
-        val storageTotalMb: Int?,
-        val storageFreeMb: Int?
-    )
-
-    private fun readDeviceInfo(): DeviceInfo {
-        val stat = StatFs(Environment.getExternalStorageDirectory().path)
-        fun toMb(value: Long): Int? = (value / (1024L * 1024L)).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
-        val batteryManager = getSystemService(BATTERY_SERVICE) as android.os.BatteryManager
-        val battery = batteryManager.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)
-            .takeIf { it in 0..100 }
-        return DeviceInfo(
-            modelName = "${Build.MANUFACTURER} ${Build.MODEL}".trim(),
-            modelNumber = Build.DEVICE,
-            androidVersion = Build.VERSION.RELEASE ?: "Unknown",
-            osVersion = Build.VERSION.RELEASE ?: "Unknown",
-            appVersion = packageManager.getPackageInfo(packageName, 0).versionName ?: "Unknown",
-            batteryLevel = battery,
-            storageTotalMb = toMb(stat.totalBytes),
-            storageFreeMb = toMb(stat.availableBytes)
+            },
+            onPairingError = { e, targetUrl ->
+                pairingProgressDialog?.dismiss(); pairingProgressDialog = null
+                val msg = if (e.message?.contains("Failed to connect", ignoreCase = true) == true) getString(R.string.toast_pairing_error_network, targetUrl)
+                else getString(R.string.toast_pairing_error_general, e.message ?: "")
+                Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+            },
+            onPairingFinished = { binding.btnSubmitPair.isEnabled = true; binding.btnSubmitPair.text = getString(R.string.btn_pair_submit) }
         )
     }
+
+    // ── Master key / Bluetooth ──
 
     private fun onShowMasterKeyClicked() {
-        val key = storage.masterKeyBase64
-        if (key == null) {
-            Toast.makeText(this, getString(R.string.toast_no_key), Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        val options = arrayOf(
-            "\uD83D\uDCCB  Copy to Clipboard",
-            "\uD83D\uDCF6  Share via Bluetooth",
-            "\uD83D\uDC41  View Key"
-        )
-
-        AlertDialog.Builder(this)
-            .setTitle(getString(R.string.dialog_master_key_title))
-            .setItems(options) { _, which ->
+        val key = storage.masterKeyBase64 ?: run { Toast.makeText(this, getString(R.string.toast_no_key), Toast.LENGTH_SHORT).show(); return }
+        AlertDialog.Builder(this).setTitle(getString(R.string.dialog_master_key_title))
+            .setItems(arrayOf("\uD83D\uDCCB  Copy to Clipboard", "\uD83D\uDCF6  Share via Bluetooth", "\uD83D\uDC41  View Key")) { _, which ->
                 when (which) {
-                    0 -> {
-                        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        clipboard.setPrimaryClip(ClipData.newPlainText("Stashly master key", key))
-                        Toast.makeText(this, getString(R.string.toast_master_key_copied), Toast.LENGTH_SHORT).show()
-                    }
+                    0 -> { copyToClipboard(key); Toast.makeText(this, getString(R.string.toast_master_key_copied), Toast.LENGTH_SHORT).show() }
                     1 -> requestBluetoothPermissionsAndShare()
-                    2 -> {
-                        AlertDialog.Builder(this)
-                            .setTitle("Master Key")
-                            .setMessage(getString(R.string.dialog_master_key_msg, key))
-                            .setNeutralButton(getString(R.string.dialog_btn_copy_key)) { _, _ ->
-                                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                clipboard.setPrimaryClip(ClipData.newPlainText("Stashly master key", key))
-                                Toast.makeText(this, getString(R.string.toast_master_key_copied), Toast.LENGTH_SHORT).show()
-                            }
-                            .setPositiveButton(getString(R.string.dialog_btn_ok), null)
-                            .show()
-                    }
+                    2 -> AlertDialog.Builder(this).setTitle("Master Key").setMessage(getString(R.string.dialog_master_key_msg, key))
+                        .setNeutralButton(getString(R.string.dialog_btn_copy_key)) { _, _ -> copyToClipboard(key); Toast.makeText(this, getString(R.string.toast_master_key_copied), Toast.LENGTH_SHORT).show() }
+                        .setPositiveButton(getString(R.string.dialog_btn_ok), null).show()
                 }
-            }
-            .setNegativeButton(getString(R.string.dialog_btn_cancel), null)
-            .show()
+            }.setNegativeButton(getString(R.string.dialog_btn_cancel), null).show()
+    }
+
+    private fun copyToClipboard(text: String) {
+        (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("Stashly master key", text))
     }
 
     @SuppressLint("MissingPermission")
     private fun requestBluetoothPermissionsAndShare() {
-        // Step 1: Check runtime permissions (Android 12+)
-        if (SystemPermissionCoordinator.bluetoothPermissions().isNotEmpty()) {
-            val needed = mutableListOf<String>()
-            for (permission in SystemPermissionCoordinator.bluetoothPermissions()) {
-                if (checkSelfPermission(permission) != PackageManager.PERMISSION_GRANTED) {
-                    needed.add(permission)
-                }
-            }
-            if (needed.isNotEmpty()) {
-                blePermissionLauncher.launch(needed.toTypedArray())
-                return
-            }
-        }
-        // Step 2: Check if Bluetooth is enabled
-        checkBluetoothEnabledAndShare()
+        val needed = btCoordinator.getNeededPermissions { checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }
+        if (needed.isNotEmpty()) { blePermissionLauncher.launch(needed); return }
+        checkBluetoothAndShare()
     }
 
     @SuppressLint("MissingPermission")
-    private fun checkBluetoothEnabledAndShare() {
-        val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
-        val adapter = bluetoothManager?.adapter
-
-        if (adapter == null) {
-            Toast.makeText(this, "Bluetooth is not available on this device.", Toast.LENGTH_LONG).show()
-            return
+    private fun checkBluetoothAndShare() {
+        when (btCoordinator.checkBluetoothState()) {
+            BluetoothPairingCoordinator.BluetoothState.NOT_AVAILABLE -> Toast.makeText(this, "Bluetooth is not available on this device.", Toast.LENGTH_LONG).show()
+            BluetoothPairingCoordinator.BluetoothState.DISABLED -> AlertDialog.Builder(this).setTitle("Bluetooth Required")
+                .setMessage("Bluetooth must be turned on to share your master key.\n\nThe web browser needs to discover this device via Bluetooth to securely receive the encryption key.")
+                .setPositiveButton("Turn On Bluetooth") { _, _ -> @Suppress("DEPRECATION") bleEnableLauncher.launch(Intent(android.bluetooth.BluetoothAdapter.ACTION_REQUEST_ENABLE)) }
+                .setNegativeButton(getString(R.string.dialog_btn_cancel), null).show()
+            BluetoothPairingCoordinator.BluetoothState.READY -> onStartBluetoothKeyShare()
         }
-
-        if (!adapter.isEnabled) {
-            // Show dialog prompting user to enable Bluetooth
-            AlertDialog.Builder(this)
-                .setTitle("Bluetooth Required")
-                .setMessage(
-                    "Bluetooth must be turned on to share your master key.\n\n" +
-                    "The web browser needs to discover this device via Bluetooth " +
-                    "to securely receive the encryption key."
-                )
-                .setPositiveButton("Turn On Bluetooth") { _, _ ->
-                    @Suppress("DEPRECATION")
-                    val enableBtIntent = Intent(android.bluetooth.BluetoothAdapter.ACTION_REQUEST_ENABLE)
-                    bleEnableLauncher.launch(enableBtIntent)
-                }
-                .setNegativeButton(getString(R.string.dialog_btn_cancel), null)
-                .show()
-            return
-        }
-
-        // Bluetooth is on, start sharing
-        startBluetoothKeyShare()
     }
 
     @SuppressLint("MissingPermission")
-    private fun startBluetoothKeyShare() {
-        val adapter = (getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
-        if (adapter == null) {
-            Toast.makeText(this, "Bluetooth is not available on this device.", Toast.LENGTH_LONG).show()
-            return
-        }
-        if (!adapter.isEnabled) {
-            // Bluetooth may have been disabled while the enable request was open.
-            // Re-open the confirmation flow instead of starting a dead share session.
-            checkBluetoothEnabledAndShare()
-            return
-        }
-
-        val key = storage.masterKeyBase64
-        if (key == null) {
-            Toast.makeText(this, getString(R.string.toast_no_key), Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        // Clean up any previous session
+    private fun onStartBluetoothKeyShare() {
+        if (btCoordinator.checkBluetoothState() != BluetoothPairingCoordinator.BluetoothState.READY) { checkBluetoothAndShare(); return }
+        val key = storage.masterKeyBase64 ?: run { Toast.makeText(this, getString(R.string.toast_no_key), Toast.LENGTH_SHORT).show(); return }
         bleKeyShareServer?.stop()
-
-        bleKeyShareServer = bluetoothPairingCoordinator.createServer(
-            context = this,
-            masterKeyBase64 = key,
-            onPinGenerated = { pin ->
-                runOnUiThread {
-                    bleShareDialog?.dismiss()
-                    bleShareDialog = AlertDialog.Builder(this)
-                        .setTitle("Confirm Pairing PIN")
-                        .setMessage(
-                            "A web client has connected.\n\n" +
-                            "Verify this PIN matches the one shown in the browser:\n\n" +
-                            "       $pin\n\n" +
-                            "If the PINs match, the master key will be shared securely."
-                        )
-                        .setCancelable(false)
-                        .setNegativeButton("Cancel") { _, _ ->
-                            bleKeyShareServer?.stop()
-                            bleKeyShareServer = null
-                            Toast.makeText(this, "Bluetooth key share cancelled.", Toast.LENGTH_SHORT).show()
-                        }
-                        .create()
-                    bleShareDialog?.show()
-                }
-            },
-            onClientConnected = { clientName ->
-                runOnUiThread {
-                    bleShareDialog?.dismiss()
-                    bleShareDialog = AlertDialog.Builder(this)
-                        .setTitle("Client Connected")
-                        .setMessage("$clientName connected.\nPerforming secure key exchange...")
-                        .setCancelable(false)
-                        .create()
-                    bleShareDialog?.show()
-                }
-            },
-            onTransferComplete = {
-                runOnUiThread {
-                    bleShareDialog?.dismiss()
-                    bleShareDialog = null
-                    bleKeyShareServer?.stop()
-                    bleKeyShareServer = null
-                    AlertDialog.Builder(this)
-                        .setTitle("Key Shared Successfully")
-                        .setMessage(
-                            "Your master key has been securely transferred " +
-                            "to the connected web client via Bluetooth.\n\n" +
-                            "The web browser can now decrypt your vault files."
-                        )
-                        .setPositiveButton(getString(R.string.dialog_btn_ok), null)
-                        .show()
-                }
-            },
-            onError = { errorMsg ->
-                runOnUiThread {
-                    bleShareDialog?.dismiss()
-                    bleShareDialog = null
-                    bleKeyShareServer?.stop()
-                    bleKeyShareServer = null
-                    Toast.makeText(this, "Bluetooth error: $errorMsg", Toast.LENGTH_LONG).show()
-                }
-            }
+        bleKeyShareServer = btCoordinator.createServer(masterKeyBase64 = key,
+            onPinGenerated = { pin -> runOnUiThread { showBleDialog("Confirm Pairing PIN", "A web client has connected.\n\nVerify this PIN matches the one shown in the browser:\n\n       $pin\n\nIf the PINs match, the master key will be shared securely.", showCancel = true) } },
+            onClientConnected = { name -> runOnUiThread { showBleDialog("Client Connected", "$name connected.\nPerforming secure key exchange...") } },
+            onTransferComplete = { runOnUiThread { dismissBleSession(); AlertDialog.Builder(this).setTitle("Key Shared Successfully").setMessage("Your master key has been securely transferred to the connected web client via Bluetooth.\n\nThe web browser can now decrypt your vault files.").setPositiveButton(getString(R.string.dialog_btn_ok), null).show() } },
+            onError = { msg -> runOnUiThread { dismissBleSession(); Toast.makeText(this, "Bluetooth error: $msg", Toast.LENGTH_LONG).show() } }
         )
-
         bleKeyShareServer!!.start()
-
-        // Show waiting dialog
-        bleShareDialog = AlertDialog.Builder(this)
-            .setTitle("Waiting for Connection")
-            .setMessage(
-                "Your device is now advertising via Bluetooth.\n\n" +
-                "On the web dashboard, open the Master Key drawer " +
-                "and tap \"Bluetooth Transfer\", then select this device.\n\n" +
-                "The connection will timeout in 2 minutes."
-            )
-            .setCancelable(false)
-            .setNegativeButton("Cancel") { _, _ ->
-                bleKeyShareServer?.stop()
-                bleKeyShareServer = null
-                Toast.makeText(this, "Bluetooth key share cancelled.", Toast.LENGTH_SHORT).show()
-            }
-            .create()
-        bleShareDialog?.show()
+        showBleDialog("Waiting for Connection", "Your device is now advertising via Bluetooth.\n\nOn the web dashboard, open the Master Key drawer and tap \"Bluetooth Transfer\", then select this device.\n\nThe connection will timeout in 2 minutes.", showCancel = true)
     }
+
+    private fun showBleDialog(title: String, message: String, showCancel: Boolean = false) {
+        bleShareDialog?.dismiss()
+        val builder = AlertDialog.Builder(this).setTitle(title).setMessage(message).setCancelable(false)
+        if (showCancel) builder.setNegativeButton("Cancel") { _, _ -> dismissBleSession(); Toast.makeText(this, "Bluetooth key share cancelled.", Toast.LENGTH_SHORT).show() }
+        bleShareDialog = builder.create(); bleShareDialog?.show()
+    }
+
+    private fun dismissBleSession() { bleShareDialog?.dismiss(); bleShareDialog = null; bleKeyShareServer?.stop(); bleKeyShareServer = null }
+
+    // ── Reset ──
 
     private fun onResetNodeClicked() {
-        AlertDialog.Builder(this)
-            .setTitle(getString(R.string.dialog_reset_title))
-            .setMessage(getString(R.string.dialog_reset_msg))
+        AlertDialog.Builder(this).setTitle(getString(R.string.dialog_reset_title)).setMessage(getString(R.string.dialog_reset_msg))
             .setPositiveButton(getString(R.string.dialog_btn_reset)) { _, _ ->
-                val brokerUrl = storage.brokerBaseUrl
-                val deviceToken = storage.deviceToken
-                if (brokerUrl.isNullOrEmpty() || deviceToken.isNullOrEmpty()) {
-                    finishLocalNodeReset()
-                    return@setPositiveButton
-                }
-                CoroutineScope(Dispatchers.Main).launch {
-                    try {
-                        withContext(Dispatchers.IO) {
-                            PairingRepository.resetNode(brokerUrl, deviceToken)
-                        }
-                        finishLocalNodeReset()
-                    } catch (e: Exception) {
-                        Toast.makeText(
-                            this@MainActivity,
-                            getString(R.string.toast_reset_error, e.message ?: ""),
-                            Toast.LENGTH_LONG
-                        ).show()
-                    }
-                }
-            }
-            .setNegativeButton(getString(R.string.dialog_btn_cancel), null)
-            .show()
-    }
-
-    private fun finishLocalNodeReset() {
-        stopService(Intent(this, StorageNodeService::class.java))
-        FileVault(this, KeyManager(storage), storage).clearVaultCache()
-        storage.clear()
-        Toast.makeText(this, getString(R.string.toast_node_cleared), Toast.LENGTH_SHORT).show()
-        refreshAll()
-        showPage(1)
+                nodeCtrl.executeReset(
+                    onLocalReset = { nodeCtrl.finishLocalNodeReset(this, onStopService = { stopService(Intent(this, StorageNodeService::class.java)) }) { Toast.makeText(this, getString(R.string.toast_node_cleared), Toast.LENGTH_SHORT).show(); refreshAll(); showPage(1) } },
+                    onError = { Toast.makeText(this, getString(R.string.toast_reset_error, it), Toast.LENGTH_LONG).show() }
+                )
+            }.setNegativeButton(getString(R.string.dialog_btn_cancel), null).show()
     }
 }
 
