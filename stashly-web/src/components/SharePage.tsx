@@ -68,11 +68,11 @@ export function SharePage({ brokerUrl, token }: Props) {
   }
 
   return (
-    <main className="page-view" style={{ maxWidth: 720, margin: "0 auto", padding: 32 }}>
+    <main className="page-view share-page">
       <span className="eyebrow">Stashly shared file</span>
       <h1>{metadata?.file.name ?? "Shared file"}</h1>
       {status && <p>{status}</p>}
-      {error && <p style={{ color: "#ef4444" }}>{error}</p>}
+      {error && <p className="share-page-error">{error}</p>}
       {metadata && plaintext && (
         <button className="btn-primary" type="button" onClick={download}>Download {metadata.file.name}</button>
       )}

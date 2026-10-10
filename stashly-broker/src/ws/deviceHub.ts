@@ -12,6 +12,7 @@ import fs from "fs";
 import path from "path";
 import { config } from "../config";
 import { prisma } from "../db";
+import { clientHub } from "./clientHub";
 
 // --- Wire protocol between broker <-> phone app (over one persistent WS) ---
 //
@@ -81,6 +82,13 @@ interface PendingThumbnail {
   timer: NodeJS.Timeout;
 }
 
+interface FileSyncBatch {
+  files: any[];
+  receivedChunks: Set<number>;
+  totalChunks: number;
+  syncRequestId?: string;
+}
+
 export interface DeviceTelemetry {
   modelName: string | null;
   modelNumber: string | null;
@@ -90,6 +98,9 @@ export interface DeviceTelemetry {
   batteryLevel: number | null;
   storageTotalMb: number | null;
   storageFreeMb: number | null;
+  sdcardMounted: boolean | null;
+  sdcardTotalMb: number | null;
+  sdcardFreeMb: number | null;
 }
 
 class DeviceHub {
@@ -105,6 +116,7 @@ class DeviceHub {
   private clientPresence = new Map<string, number>(); // deviceId:userId -> last web heartbeat
   private clientOnlineState = new Map<string, boolean>(); // deviceId:userId -> explicit online status
   private telemetry = new Map<string, DeviceTelemetry>(); // live only; intentionally never persisted
+  private syncBatches = new Map<string, FileSyncBatch>();
 
   getDeviceTelemetry(deviceId: string): DeviceTelemetry {
     return this.telemetry.get(deviceId) ?? {
@@ -116,6 +128,9 @@ class DeviceHub {
       batteryLevel: null,
       storageTotalMb: null,
       storageFreeMb: null,
+      sdcardMounted: null,
+      sdcardTotalMb: null,
+      sdcardFreeMb: null,
     };
   }
 
@@ -152,11 +167,11 @@ class DeviceHub {
     if (socket && socket.readyState === WebSocket.OPEN) {
       try {
         socket.send(JSON.stringify({ type: "node_unlinked", reason }));
-      } catch {}
+      } catch { }
       setTimeout(() => {
         try {
           socket.close(4004, reason);
-        } catch {}
+        } catch { }
         this.sockets.delete(deviceId);
       }, 200);
     }
@@ -167,7 +182,7 @@ class DeviceHub {
     if (socket?.readyState === WebSocket.OPEN) {
       try {
         socket.send(JSON.stringify({ type: "client_unlinked", userId }));
-      } catch {}
+      } catch { }
     }
   }
 
@@ -176,7 +191,7 @@ class DeviceHub {
     if (socket?.readyState === WebSocket.OPEN) {
       try {
         socket.send(JSON.stringify({ type: "client_presence", userId, online }));
-      } catch {}
+      } catch { }
     }
   }
 
@@ -217,7 +232,6 @@ class DeviceHub {
   private async handleDisconnect(deviceId: string, socket: WebSocket) {
     if (this.sockets.get(deviceId) !== socket) return; // already replaced
     this.sockets.delete(deviceId);
-    await this.clearDeviceFiles(deviceId);
     try {
       await prisma.device.update({
         where: { id: deviceId },
@@ -240,18 +254,34 @@ class DeviceHub {
       case "file_sync":
         await this.handleFileSync(deviceId, msg.files ?? []);
         if (typeof msg.syncRequestId === "string") {
-          this.sockets.get(deviceId)?.send(JSON.stringify({
-            type: "sync_result",
-            requestId: msg.syncRequestId,
-            ok: true,
-          }));
+          this.resolvePendingSync(msg.syncRequestId);
         }
+        break;
+      case "file_sync_chunk":
+        await this.handleFileSyncChunk(deviceId, msg);
+        break;
+      case "file_delta":
+        await this.handleFileDelta(deviceId, msg);
         break;
       case "hello":
         await this.handleHello(deviceId, msg);
         break;
       case "node_stop":
         await this.handleNodeStop(deviceId);
+        break;
+      case "sharing_pause":
+        {
+          const changed = await prisma.device.updateMany({
+            where: { id: deviceId, sharingPaused: false },
+            data: { sharingPaused: true },
+          });
+          if (changed.count === 0) break;
+          await clientHub.pushToDeviceClients(deviceId, {
+            type: "device_sharing_changed",
+            deviceId,
+            sharingPaused: true,
+          });
+        }
         break;
       case "fetch_result":
         this.handleFetchResult(msg);
@@ -277,15 +307,40 @@ class DeviceHub {
   }
 
   private async handleHello(deviceId: string, msg: any) {
+    const changed = await prisma.device.updateMany({
+      where: { id: deviceId, sharingPaused: true },
+      data: { sharingPaused: false },
+    });
+    const parseNum = (v: any) => {
+      if (v == null) return undefined;
+      const n = Number(v);
+      return Number.isFinite(n) ? Math.round(n) : undefined;
+    };
+    const storageTotal = parseNum(msg.storageTotalMb);
+    const storageFree = parseNum(msg.storageFreeMb);
+    const sdTotal = parseNum(msg.sdcardTotalMb);
+    const sdFree = parseNum(msg.sdcardFreeMb);
+    const battery = parseNum(msg.batteryLevel);
+
     this.updateDeviceTelemetry(deviceId, {
       ...(typeof msg.modelName === "string" ? { modelName: msg.modelName } : {}),
       ...(typeof msg.modelNumber === "string" ? { modelNumber: msg.modelNumber } : {}),
       ...(typeof msg.androidVersion === "string" ? { androidVersion: msg.androidVersion } : {}),
       ...(typeof msg.osVersion === "string" ? { osVersion: msg.osVersion } : {}),
       ...(typeof msg.appVersion === "string" ? { appVersion: msg.appVersion } : {}),
-      ...(Number.isInteger(msg.batteryLevel) ? { batteryLevel: msg.batteryLevel } : {}),
-      ...(Number.isInteger(msg.storageTotalMb) ? { storageTotalMb: msg.storageTotalMb } : {}),
-      ...(Number.isInteger(msg.storageFreeMb) ? { storageFreeMb: msg.storageFreeMb } : {}),
+      ...(battery !== undefined ? { batteryLevel: battery } : {}),
+      ...(storageTotal !== undefined ? { storageTotalMb: storageTotal } : {}),
+      ...(storageFree !== undefined ? { storageFreeMb: storageFree } : {}),
+      ...(msg.sdcardMounted !== undefined ? { sdcardMounted: Boolean(msg.sdcardMounted) } : {}),
+      ...(sdTotal !== undefined ? { sdcardTotalMb: sdTotal } : {}),
+      ...(sdFree !== undefined ? { sdcardFreeMb: sdFree } : {}),
+    });
+
+    await clientHub.pushToDeviceClients(deviceId, {
+      type: "device_telemetry_changed",
+      deviceId,
+      status: "online",
+      ...this.getDeviceTelemetry(deviceId),
     });
   }
 
@@ -311,6 +366,49 @@ class DeviceHub {
 
   private static readonly CHUNKED_THRESHOLD = 1024 * 1024; // 1 MB — files above this use chunked streaming
 
+  private resolvePendingSync(requestId: string) {
+    const pending = this.pendingSyncs.get(requestId);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    this.pendingSyncs.delete(requestId);
+    pending.resolve();
+  }
+
+  private async handleFileSyncChunk(deviceId: string, msg: any) {
+    if (
+      typeof msg.syncId !== "string" ||
+      !Number.isInteger(msg.chunkIndex) ||
+      !Number.isInteger(msg.totalChunks) ||
+      msg.chunkIndex < 0 ||
+      msg.totalChunks <= 0 ||
+      !Array.isArray(msg.files)
+    ) {
+      return;
+    }
+
+    const batchKey = `${deviceId}:${msg.syncId}`;
+    let batch = this.syncBatches.get(batchKey);
+    if (!batch) {
+      batch = {
+        files: [],
+        receivedChunks: new Set<number>(),
+        totalChunks: msg.totalChunks,
+        syncRequestId: typeof msg.syncRequestId === "string" ? msg.syncRequestId : undefined,
+      };
+      this.syncBatches.set(batchKey, batch);
+    }
+
+    if (batch.receivedChunks.has(msg.chunkIndex)) return;
+    batch.receivedChunks.add(msg.chunkIndex);
+    batch.files.push(...msg.files);
+    if (typeof msg.syncRequestId === "string") batch.syncRequestId = msg.syncRequestId;
+
+    if (batch.receivedChunks.size < batch.totalChunks) return;
+    this.syncBatches.delete(batchKey);
+    await this.handleFileSync(deviceId, batch.files);
+    if (batch.syncRequestId) this.resolvePendingSync(batch.syncRequestId);
+  }
+
   private async handleFileSync(deviceId: string, files: any[]) {
     const validFiles = files.filter((file) =>
       file && typeof file.path === "string" && typeof file.name === "string" &&
@@ -318,42 +416,46 @@ class DeviceHub {
       typeof file.encryptedDek === "string"
     );
     const incomingPaths = new Set(validFiles.map((file) => file.path));
-    const existingFiles = await prisma.fileEntry.findMany({
-      where: { deviceId, deletedAt: null },
-      select: { id: true, path: true, cacheKey: true },
-    });
-    const removedFiles = existingFiles.filter((file) => !incomingPaths.has(file.path));
 
-    // Clean up cache files and chunk caches for removed entries
-    await Promise.all(removedFiles.map(async (file) => {
-      const cacheName = file.cacheKey ?? `${file.id}.bin`;
-      await fs.promises.unlink(path.join(config.storageDir, cacheName)).catch(() => undefined);
-      await fs.promises.rm(path.join(config.storageDir, "chunks", file.id), { recursive: true, force: true }).catch(() => undefined);
-    }));
+    // Fetch all existing files for this device in a single query
+    const existingFiles = await prisma.fileEntry.findMany({
+      where: { deviceId },
+      select: {
+        id: true,
+        path: true,
+        name: true,
+        sizeBytes: true,
+        contentHash: true,
+        mimeType: true,
+        encryptedDek: true,
+        cacheKey: true,
+        deletedAt: true,
+      },
+    });
+
+    const existingMap = new Map(existingFiles.map((f) => [f.path, f]));
+    const removedFiles = existingFiles.filter((f) => !incomingPaths.has(f.path));
+
+    // Clean up cache files for removed entries
     if (removedFiles.length > 0) {
+      await Promise.all(removedFiles.map(async (file) => {
+        const cacheName = file.cacheKey ?? `${file.id}.bin`;
+        await fs.promises.unlink(path.join(config.storageDir, cacheName)).catch(() => undefined);
+        await fs.promises.rm(path.join(config.storageDir, "chunks", file.id), { recursive: true, force: true }).catch(() => undefined);
+      }));
       await prisma.fileEntry.deleteMany({ where: { id: { in: removedFiles.map((file) => file.id) } } });
     }
 
+    const toInsert: any[] = [];
+    const toUpdate: { id: string; data: any; version?: any }[] = [];
+
     for (const f of validFiles) {
-      const existing = await prisma.fileEntry.findUnique({ where: { deviceId_path: { deviceId, path: f.path } } });
-      const contentHashChanged = existing && existing.contentHash !== f.contentHash;
-      if (contentHashChanged && existing.contentHash !== "directory") {
-        await prisma.fileVersion.create({
-          data: {
-            fileId: existing.id, deviceId, path: existing.path, name: existing.name,
-            sizeBytes: existing.sizeBytes, contentHash: existing.contentHash,
-            mimeType: existing.mimeType, encryptedDek: existing.encryptedDek, cacheKey: existing.cacheKey,
-          },
-        });
-        // Invalidate stale cached chunks and legacy cache file
-        await fs.promises.rm(path.join(config.storageDir, "chunks", existing.id), { recursive: true, force: true }).catch(() => undefined);
-        const cacheName = existing.cacheKey ?? `${existing.id}.bin`;
-        await fs.promises.unlink(path.join(config.storageDir, cacheName)).catch(() => undefined);
-      }
+      const existing = existingMap.get(f.path);
       const format = f.sizeBytes > DeviceHub.CHUNKED_THRESHOLD ? "chunked" : "single";
-      await prisma.fileEntry.upsert({
-        where: { deviceId_path: { deviceId, path: f.path } },
-        create: {
+      const isTrashed = Boolean(f.isTrashed);
+
+      if (!existing) {
+        toInsert.push({
           deviceId,
           path: f.path,
           name: f.name,
@@ -364,24 +466,139 @@ class DeviceHub {
           encryptionFormat: format,
           isCached: false,
           cachedContentHash: null,
-        },
-        update: {
-          name: f.name,
-          sizeBytes: f.sizeBytes,
-          contentHash: f.contentHash,
-          mimeType: f.mimeType ?? null,
-          encryptedDek: f.encryptedDek,
-          encryptionFormat: format,
-          deletedAt: null,
-          ...(contentHashChanged ? {
-            isCached: false,
-            cacheKey: null,
-            cachedAt: null,
-            cachedContentHash: null,
-          } : {}),
-        },
+          deletedAt: isTrashed ? new Date() : null,
+        });
+      } else {
+        const contentHashChanged = existing.contentHash !== f.contentHash;
+        const targetDeletedAt = isTrashed ? (existing.deletedAt ?? new Date()) : null;
+        const metadataChanged =
+          contentHashChanged ||
+          existing.sizeBytes !== f.sizeBytes ||
+          existing.name !== f.name ||
+          existing.mimeType !== (f.mimeType ?? null) ||
+          existing.encryptedDek !== f.encryptedDek ||
+          (existing.deletedAt === null) !== (targetDeletedAt === null);
+
+        if (metadataChanged) {
+          const updateData: any = {
+            name: f.name,
+            sizeBytes: f.sizeBytes,
+            contentHash: f.contentHash,
+            mimeType: f.mimeType ?? null,
+            encryptedDek: f.encryptedDek,
+            encryptionFormat: format,
+            deletedAt: targetDeletedAt,
+          };
+
+          let versionData: any = null;
+          if (contentHashChanged && existing.contentHash !== "directory" && !isTrashed) {
+            versionData = {
+              fileId: existing.id,
+              deviceId,
+              path: existing.path,
+              name: existing.name,
+              sizeBytes: existing.sizeBytes,
+              contentHash: existing.contentHash,
+              mimeType: existing.mimeType,
+              encryptedDek: existing.encryptedDek,
+              cacheKey: existing.cacheKey,
+            };
+            updateData.isCached = false;
+            updateData.cacheKey = null;
+            updateData.cachedAt = null;
+            updateData.cachedContentHash = null;
+          }
+
+          toUpdate.push({ id: existing.id, data: updateData, version: versionData });
+        }
+      }
+    }
+
+    // Execute bulk insertions in batches of 500
+    const BATCH_SIZE = 500;
+    for (let i = 0; i < toInsert.length; i += BATCH_SIZE) {
+      const batch = toInsert.slice(i, i + BATCH_SIZE);
+      await prisma.fileEntry.createMany({
+        data: batch,
       });
     }
+
+    // Execute updates in parallel chunks with transactions
+    for (let i = 0; i < toUpdate.length; i += BATCH_SIZE) {
+      const batch = toUpdate.slice(i, i + BATCH_SIZE);
+      const ops = batch.flatMap((item) => {
+        const list: any[] = [
+          prisma.fileEntry.update({
+            where: { id: item.id },
+            data: item.data,
+          }),
+        ];
+        if (item.version) {
+          list.push(prisma.fileVersion.create({ data: item.version }));
+        }
+        return list;
+      });
+      await prisma.$transaction(ops);
+    }
+  }
+
+  public async handleFileDelta(deviceId: string, delta: { action: "create" | "update" | "delete" | "trash" | "restore" | "permanent_delete"; file: any }) {
+    if (!delta || !delta.file || typeof delta.file.path !== "string") return;
+    const { action, file } = delta;
+
+    if (action === "trash") {
+      await prisma.fileEntry.updateMany({
+        where: { deviceId, path: file.path },
+        data: { deletedAt: new Date() },
+      });
+      return;
+    }
+
+    if (action === "restore") {
+      await prisma.fileEntry.updateMany({
+        where: { deviceId, path: file.path },
+        data: { deletedAt: null },
+      });
+      return;
+    }
+
+    if (action === "delete" || action === "permanent_delete") {
+      const existing = await prisma.fileEntry.findUnique({
+        where: { deviceId_path: { deviceId, path: file.path } },
+      });
+      if (existing) {
+        const cacheName = existing.cacheKey ?? `${existing.id}.bin`;
+        await fs.promises.unlink(path.join(config.storageDir, cacheName)).catch(() => undefined);
+        await fs.promises.rm(path.join(config.storageDir, "chunks", existing.id), { recursive: true, force: true }).catch(() => undefined);
+        await prisma.fileEntry.delete({ where: { id: existing.id } });
+      }
+      return;
+    }
+
+    const format = (file.sizeBytes ?? 0) > DeviceHub.CHUNKED_THRESHOLD ? "chunked" : "single";
+    await prisma.fileEntry.upsert({
+      where: { deviceId_path: { deviceId, path: file.path } },
+      create: {
+        deviceId,
+        path: file.path,
+        name: file.name ?? path.basename(file.path),
+        sizeBytes: file.sizeBytes ?? 0,
+        contentHash: file.contentHash ?? "",
+        mimeType: file.mimeType ?? null,
+        encryptedDek: file.encryptedDek ?? "",
+        encryptionFormat: format,
+        isCached: false,
+      },
+      update: {
+        name: file.name ?? path.basename(file.path),
+        sizeBytes: file.sizeBytes ?? 0,
+        contentHash: file.contentHash ?? "",
+        mimeType: file.mimeType ?? null,
+        encryptedDek: file.encryptedDek ?? "",
+        encryptionFormat: format,
+        deletedAt: null,
+      },
+    });
   }
 
   private handleFetchResult(msg: any) {
@@ -506,10 +723,39 @@ class DeviceHub {
     return result;
   }
 
+  private thumbnailSemaphores = new Map<string, { active: number; queue: (() => void)[] }>();
+
+  private acquireThumbnailSlot(deviceId: string): Promise<() => void> {
+    const sem = this.thumbnailSemaphores.get(deviceId) ?? { active: 0, queue: [] };
+    this.thumbnailSemaphores.set(deviceId, sem);
+    const MAX_CONCURRENT = 4;
+
+    return new Promise((resolve) => {
+      const run = () => {
+        sem.active++;
+        let released = false;
+        resolve(() => {
+          if (released) return;
+          released = true;
+          sem.active--;
+          const next = sem.queue.shift();
+          if (next) next();
+        });
+      };
+
+      if (sem.active < MAX_CONCURRENT) {
+        run();
+      } else {
+        sem.queue.push(run);
+      }
+    });
+  }
+
   /**
    * Request a thumbnail on-demand from the phone. The phone generates the
    * thumbnail, encrypts it with the file's DEK, and returns it as a binary
-   * WS frame. The broker never stores the thumbnail — it relays it.
+   * WS frame. Throttled to max 4 concurrent requests per device to avoid
+   * congesting the phone socket.
    */
   async requestThumbnail(deviceId: string, filePath: string): Promise<Buffer> {
     const socket = this.sockets.get(deviceId);
@@ -517,17 +763,22 @@ class DeviceHub {
       throw new Error("DEVICE_OFFLINE");
     }
 
+    const releaseSlot = await this.acquireThumbnailSlot(deviceId);
     const requestId = uuid();
-    const result = new Promise<Buffer>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingThumbnails.delete(requestId);
-        reject(new Error("DEVICE_TIMEOUT"));
-      }, config.deviceFetchTimeoutMs);
-      this.pendingThumbnails.set(requestId, { resolve, reject, timer });
-    });
 
-    socket.send(JSON.stringify({ type: "thumbnail_request", requestId, path: filePath }));
-    return result;
+    try {
+      const result = await new Promise<Buffer>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          this.pendingThumbnails.delete(requestId);
+          reject(new Error("DEVICE_TIMEOUT"));
+        }, config.deviceFetchTimeoutMs);
+        this.pendingThumbnails.set(requestId, { resolve, reject, timer });
+        socket.send(JSON.stringify({ type: "thumbnail_request", requestId, path: filePath }));
+      });
+      return result;
+    } finally {
+      releaseSlot();
+    }
   }
 
   /**
@@ -576,16 +827,41 @@ class DeviceHub {
     if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error("DEVICE_OFFLINE");
 
     const requestId = uuid();
+    const timeoutMs = Math.max(60000, config.deviceFetchTimeoutMs * 2);
     const result = new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pendingUploads.delete(requestId);
         reject(new Error("DEVICE_TIMEOUT"));
-      }, config.deviceFetchTimeoutMs);
+      }, timeoutMs);
       this.pendingUploads.set(requestId, { resolve, reject, timer });
     });
 
     socket.send(JSON.stringify({ type: "upload_request", requestId, path, dataBase64, encryptedDek }));
     return result;
+  }
+
+  async uploadChunkedFile(deviceId: string, path: string, chunks: Buffer[], encryptedDek: string, totalBytes: number, totalChunks: number): Promise<void> {
+    const socket = this.sockets.get(deviceId);
+    if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error("DEVICE_OFFLINE");
+    const uploadId = uuid();
+    const completionTimeout = Math.max(60000, totalChunks * 8000);
+    const sendAndWait = (message: any, timeoutMs: number = 45000) => {
+      const requestId = uuid();
+      const result = new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          this.pendingUploads.delete(requestId);
+          reject(new Error("DEVICE_TIMEOUT"));
+        }, timeoutMs);
+        this.pendingUploads.set(requestId, { resolve, reject, timer });
+      });
+      socket.send(JSON.stringify({ ...message, requestId }));
+      return result;
+    };
+    await sendAndWait({ type: "upload_start", uploadId, path, encryptedDek, totalBytes, totalChunks }, 30000);
+    for (let index = 0; index < chunks.length; index++) {
+      await sendAndWait({ type: "upload_chunk", uploadId, chunkIndex: index, dataBase64: chunks[index].toString("base64") }, 45000);
+    }
+    await sendAndWait({ type: "upload_complete", uploadId }, completionTimeout);
   }
 
   async deleteFile(deviceId: string, path: string, permanent: boolean = false): Promise<void> {

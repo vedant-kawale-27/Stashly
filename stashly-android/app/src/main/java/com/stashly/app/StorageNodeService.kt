@@ -153,6 +153,7 @@ class StorageNodeService : Service() {
         if (::storage.isInitialized) {
             storage.nodeEnabled = false
             storage.isLive = false
+            storage.brokerConnectionState = BrokerSocketClient.State.OFFLINE.name
             storage.lastLiveTimestamp = System.currentTimeMillis()
         }
         if (::socketClient.isInitialized) {
@@ -169,6 +170,7 @@ class StorageNodeService : Service() {
         maintenanceHandler.removeCallbacks(trashCleanup)
         if (::storage.isInitialized) {
             storage.isLive = false
+            storage.brokerConnectionState = BrokerSocketClient.State.OFFLINE.name
             storage.lastLiveTimestamp = System.currentTimeMillis()
         }
         if (::socketClient.isInitialized) {
@@ -189,17 +191,27 @@ class StorageNodeService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun updateNotification(state: BrokerSocketClient.State) {
+        val stateChanged = (currentState != state)
         currentState = state
         if (::storage.isInitialized) {
             val isOnline = (state == BrokerSocketClient.State.ONLINE)
             storage.isLive = isOnline
+            storage.brokerConnectionState = state.name
             if (isOnline) {
                 storage.lastLiveTimestamp = System.currentTimeMillis()
             }
-            StashlyWidgetProvider.updateAll(this)
+            if (stateChanged) {
+                StashlyWidgetProvider.updateAll(this)
+            }
         }
         val manager = getSystemService(NotificationManager::class.java)
         manager.notify(NOTIFICATION_ID, buildNotification(state))
+        if (stateChanged) {
+            sendBroadcast(Intent(ACTION_BROKER_STATE_CHANGED).apply {
+                setPackage(packageName)
+                putExtra(EXTRA_BROKER_STATE, state.name)
+            })
+        }
     }
 
     private fun buildNotification(state: BrokerSocketClient.State): Notification {
@@ -246,9 +258,11 @@ class StorageNodeService : Service() {
         const val ACTION_NODE_UNLINKED = "com.stashly.app.action.NODE_UNLINKED"
         const val ACTION_CLIENT_UNLINKED = "com.stashly.app.action.CLIENT_UNLINKED"
         const val ACTION_CLIENT_PRESENCE = "com.stashly.app.action.CLIENT_PRESENCE"
+        const val ACTION_BROKER_STATE_CHANGED = "com.stashly.app.action.BROKER_STATE_CHANGED"
         const val EXTRA_UNLINK_REASON = "extra_unlink_reason"
         const val EXTRA_CLIENT_USER_ID = "extra_client_user_id"
         const val EXTRA_CLIENT_ONLINE = "extra_client_online"
+        const val EXTRA_BROKER_STATE = "extra_broker_state"
         private const val CHANNEL_ID = "storage_node_status"
         private const val NOTIFICATION_ID = 1
         private const val STOP_REQUEST_CODE = 2

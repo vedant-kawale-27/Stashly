@@ -86,7 +86,10 @@ class PairingFlowController(
         val appVersion: String,
         val batteryLevel: Int?,
         val storageTotalMb: Int?,
-        val storageFreeMb: Int?
+        val storageFreeMb: Int?,
+        val sdcardMounted: Boolean = false,
+        val sdcardTotalMb: Int? = null,
+        val sdcardFreeMb: Int? = null
     )
 
     fun readDeviceInfo(context: Context): DeviceInfo {
@@ -95,6 +98,23 @@ class PairingFlowController(
         val batteryManager = context.getSystemService(Context.BATTERY_SERVICE) as android.os.BatteryManager
         val battery = batteryManager.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)
             .takeIf { it in 0..100 }
+
+        var sdcardTotalMb: Int? = null
+        var sdcardFreeMb: Int? = null
+        var sdcardMounted = false
+
+        if (storage.sdcardAccessEnabled) {
+            try {
+                val removableFile = StorageUtils.getMountedSdCardFile(context)
+                if (removableFile != null) {
+                    val sdStat = StatFs(removableFile.path)
+                    sdcardMounted = true
+                    sdcardTotalMb = toMb(sdStat.totalBytes)
+                    sdcardFreeMb = toMb(sdStat.availableBytes)
+                }
+            } catch (_: Exception) {}
+        }
+
         return DeviceInfo(
             modelName = "${Build.MANUFACTURER} ${Build.MODEL}".trim(),
             modelNumber = Build.DEVICE,
@@ -103,7 +123,10 @@ class PairingFlowController(
             appVersion = context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "Unknown",
             batteryLevel = battery,
             storageTotalMb = toMb(stat.totalBytes),
-            storageFreeMb = toMb(stat.availableBytes)
+            storageFreeMb = toMb(stat.availableBytes),
+            sdcardMounted = sdcardMounted,
+            sdcardTotalMb = sdcardTotalMb,
+            sdcardFreeMb = sdcardFreeMb
         )
     }
 
@@ -133,7 +156,7 @@ class PairingFlowController(
         if (rawBrokerUrl.isEmpty() || deviceName.isEmpty() || rawPairingToken.isEmpty()) {
             onValidationError(); return
         }
-        if (!SystemPermissionCoordinator.hasFullStorageAccess()) {
+        if (!SystemPermissionCoordinator.hasFullStorageAccess(context)) {
             onNeedsStoragePermission(); return
         }
 
@@ -162,7 +185,10 @@ class PairingFlowController(
                         appVersion = deviceInfo.appVersion,
                         batteryLevel = deviceInfo.batteryLevel,
                         storageTotalMb = deviceInfo.storageTotalMb,
-                        storageFreeMb = deviceInfo.storageFreeMb
+                        storageFreeMb = deviceInfo.storageFreeMb,
+                        sdcardMounted = deviceInfo.sdcardMounted,
+                        sdcardTotalMb = deviceInfo.sdcardTotalMb,
+                        sdcardFreeMb = deviceInfo.sdcardFreeMb
                     )
                 }
                 storage.brokerBaseUrl = targetUrl
@@ -232,13 +258,14 @@ class PairingFlowController(
      * @param onError called with the error message.
      */
     fun savePairingScope(
+        context: Context,
         pairing: PairingResult,
         scope: AccessScope,
         onStartService: () -> Unit,
         onSuccess: (isPairing: Boolean) -> Unit,
         onError: (String) -> Unit
     ) {
-        if (!SystemPermissionCoordinator.hasFullStorageAccess()) return
+        if (!SystemPermissionCoordinator.hasFullStorageAccess(context)) return
         val brokerUrl = storage.brokerBaseUrl ?: return
         val deviceToken = pairing.deviceToken
         val isPairing = viewModel.pendingScopeIsPairing

@@ -4,7 +4,7 @@
 // the client/device; only paired devices hold the master key needed to decrypt them.
 
 datasource db {
-  provider = "postgresql"
+  provider = "sqlite"
   url      = env("DATABASE_URL")
 }
 
@@ -52,7 +52,7 @@ model AuditLog {
   action String
   targetType String?
   targetId String?
-  metadata Json?
+  metadata String?
   ipAddress String?
   createdAt DateTime @default(now())
   actor User? @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
@@ -65,6 +65,7 @@ model Device {
   name           String      // e.g. "Vedant's Pixel 8"
   platform       String      @default("android") // "android" | "windows" | "ios" | "linux"
   status         String      @default("offline") // "online" | "offline"
+  sharingPaused  Boolean     @default(false)
   lastSeenAt     DateTime?
   storageQuotaMb Int         @default(0) // how much local storage this device has offered
   createdAt      DateTime    @default(now())
@@ -149,8 +150,11 @@ model UploadSession {
   mimeType      String?
   encryptedDek  String
   totalBytes    Int
+  totalChunks   Int      @default(1)
+  encryptionFormat String @default("single")
   receivedBytes Int      @default(0)
   chunkCount    Int      @default(0)
+  completedAt   DateTime?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
   expiresAt     DateTime

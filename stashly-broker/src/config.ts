@@ -12,10 +12,33 @@ import fs from "fs";
 import crypto from "crypto";
 
 const nodeEnv = (process.env.NODE_ENV ?? "development").toLowerCase();
-const databaseUrl = process.env.DATABASE_URL;
-if (!databaseUrl?.startsWith("postgresql://") && !databaseUrl?.startsWith("postgres://")) {
-  throw new Error("DATABASE_URL must be a PostgreSQL URL starting with postgresql:// or postgres://");
+const isProduction = nodeEnv === "production";
+
+let databaseUrl = process.env.DATABASE_URL?.trim();
+if (!databaseUrl) {
+  if (isProduction) {
+    throw new Error("DATABASE_URL is required in production and must be a PostgreSQL connection URL (postgresql://...)");
+  } else {
+    databaseUrl = "file:./dev.db";
+    process.env.DATABASE_URL = databaseUrl;
+  }
 }
+
+if (isProduction) {
+  if (!databaseUrl.startsWith("postgresql://") && !databaseUrl.startsWith("postgres://")) {
+    throw new Error(`In production (NODE_ENV=production), DATABASE_URL must be a PostgreSQL URL (postgresql://...). Received: "${databaseUrl}"`);
+  }
+} else {
+  if (
+    !databaseUrl.startsWith("file:") &&
+    !databaseUrl.startsWith("postgresql://") &&
+    !databaseUrl.startsWith("postgres://")
+  ) {
+    throw new Error(`In development, DATABASE_URL must be a SQLite file URL (file:./dev.db) or PostgreSQL URL. Received: "${databaseUrl}"`);
+  }
+}
+
+const databaseProvider = isProduction ? "postgresql" : (databaseUrl.startsWith("file:") ? "sqlite" : "postgresql");
 
 function required(name: string): string {
   const val = process.env[name];
@@ -48,6 +71,9 @@ if (!mfaEncryptionKey) {
 export const config = {
   port: Number(process.env.PORT ?? 4000),
   nodeEnv,
+  isProduction,
+  databaseUrl,
+  databaseProvider,
   publicUrl: process.env.PUBLIC_URL ? process.env.PUBLIC_URL.trim().replace(/\/+$/, "") : null,
   jwtSecret,
   mfaEncryptionKey,

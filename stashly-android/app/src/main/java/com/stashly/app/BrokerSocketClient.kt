@@ -20,6 +20,7 @@ import okio.ByteString
 import okio.ByteString.Companion.toByteString
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.min
@@ -53,10 +54,23 @@ class BrokerSocketClient(
         .pingInterval(20, TimeUnit.SECONDS)
         .build()
 
+    @Volatile
     private var socket: WebSocket? = null
-    private var reconnectAttempt = 0
+    @Volatile
+    private var currentState: State = State.OFFLINE
+    @Volatile
     private var stopped = false
+    private val connectLock = Any()
+    private val scheduler = java.util.concurrent.Executors.newSingleThreadScheduledExecutor()
+    private var reconnectFuture: java.util.concurrent.ScheduledFuture<*>? = null
+    private var reconnectAttempt = 0
     private val cancelledRequests = ConcurrentHashMap.newKeySet<String>()
+    private data class IncomingUpload(val path: String, val encryptedDek: String, val totalBytes: Long, val totalChunks: Int, val chunks: java.util.concurrent.ConcurrentHashMap<Int, ByteArray> = java.util.concurrent.ConcurrentHashMap())
+    private val incomingUploads = ConcurrentHashMap<String, IncomingUpload>()
+    private val workerPool = java.util.concurrent.Executors.newFixedThreadPool(4)
+    private val syncLock = Any()
+    @Volatile
+    private var isSyncing = false
 
     private fun sendDeviceHello(targetSocket: WebSocket) {
         val stat = android.os.StatFs(android.os.Environment.getExternalStorageDirectory().path)
@@ -64,6 +78,24 @@ class BrokerSocketClient(
             val manager = context.getSystemService(Context.BATTERY_SERVICE) as android.os.BatteryManager
             manager.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)
         }.getOrNull()
+
+        var sdcardTotalMb: Long? = null
+        var sdcardFreeMb: Long? = null
+        var sdcardMounted = false
+
+        val sdcardAccessEnabled = SecureStorage(context).sdcardAccessEnabled
+        if (sdcardAccessEnabled) {
+            try {
+                val removableFile = StorageUtils.getMountedSdCardFile(context)
+                if (removableFile != null) {
+                    val sdStat = android.os.StatFs(removableFile.path)
+                    sdcardMounted = true
+                    sdcardTotalMb = (sdStat.totalBytes / (1024L * 1024L)).coerceAtMost(Int.MAX_VALUE.toLong())
+                    sdcardFreeMb = (sdStat.availableBytes / (1024L * 1024L)).coerceAtMost(Int.MAX_VALUE.toLong())
+                }
+            } catch (_: Exception) {}
+        }
+
         val hello = JSONObject().apply {
             put("type", "hello")
             put("deviceId", deviceId)
@@ -74,58 +106,176 @@ class BrokerSocketClient(
             put("appVersion", runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull() ?: "Unknown")
             put("storageTotalMb", (stat.totalBytes / (1024L * 1024L)).coerceAtMost(Int.MAX_VALUE.toLong()))
             put("storageFreeMb", (stat.availableBytes / (1024L * 1024L)).coerceAtMost(Int.MAX_VALUE.toLong()))
+            put("sdcardMounted", sdcardMounted)
+            if (sdcardTotalMb != null) put("sdcardTotalMb", sdcardTotalMb)
+            if (sdcardFreeMb != null) put("sdcardFreeMb", sdcardFreeMb)
             if (battery != null && battery in 0..100) put("batteryLevel", battery)
         }
         targetSocket.send(hello.toString())
     }
 
     fun start() {
-        stopped = false
-        connect()
+        synchronized(connectLock) {
+            stopped = false
+            cancelReconnect()
+            if (currentState == State.ONLINE && socket != null) {
+                Log.d(TAG, "start() called but already ONLINE with active socket")
+                return
+            }
+            if (currentState == State.CONNECTING && socket != null) {
+                Log.d(TAG, "start() called but already CONNECTING with active socket")
+                return
+            }
+            connectLocked()
+        }
     }
 
     fun stop(clearRemoteFiles: Boolean = false) {
-        stopped = true
-        if (clearRemoteFiles) {
-            socket?.send(JSONObject().put("type", "node_stop").toString())
+        synchronized(connectLock) {
+            stopped = true
+            cancelReconnect()
+            currentState = State.OFFLINE
+            val activeSocket = socket
+            socket = null
+            if (activeSocket != null) {
+                try {
+                    activeSocket.send(JSONObject().put("type", "sharing_pause").toString())
+                    if (clearRemoteFiles) {
+                        activeSocket.send(JSONObject().put("type", "node_stop").toString())
+                    }
+                    activeSocket.close(1000, "client_stopping")
+                } catch (_: Exception) {
+                    activeSocket.cancel()
+                }
+            }
+            onStateChange(State.OFFLINE)
         }
-        socket?.close(1000, "client_stopping")
-        socket = null
+    }
+
+    private fun sendDeltaUpdate(entry: FileSyncEntry) {
+        try {
+            send(JSONObject().apply {
+                put("type", "file_delta")
+                put("action", "update")
+                put("file", JSONObject().apply {
+                    put("path", entry.path)
+                    put("name", entry.name)
+                    put("sizeBytes", entry.sizeBytes)
+                    put("contentHash", entry.contentHash)
+                    put("mimeType", entry.mimeType)
+                    put("encryptedDek", entry.encryptedDek)
+                })
+            })
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed sending delta update: ${e.message}")
+        }
+    }
+
+    private fun sendDeltaTrash(path: String) {
+        try {
+            send(JSONObject().apply {
+                put("type", "file_delta")
+                put("action", "trash")
+                put("file", JSONObject().apply {
+                    put("path", path)
+                })
+            })
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed sending delta trash: ${e.message}")
+        }
+    }
+
+    private fun sendDeltaRestore(path: String) {
+        try {
+            send(JSONObject().apply {
+                put("type", "file_delta")
+                put("action", "restore")
+                put("file", JSONObject().apply {
+                    put("path", path)
+                })
+            })
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed sending delta restore: ${e.message}")
+        }
+    }
+
+    private fun sendDeltaPermanentDelete(path: String) {
+        try {
+            send(JSONObject().apply {
+                put("type", "file_delta")
+                put("action", "permanent_delete")
+                put("file", JSONObject().apply {
+                    put("path", path)
+                })
+            })
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed sending delta permanent delete: ${e.message}")
+        }
     }
 
     /** Call after any local file change to push fresh metadata to the broker. */
     fun pushFileSync(syncRequestId: String? = null): Boolean {
-        try {
+        synchronized(syncLock) {
+            if (isSyncing) return true
+            isSyncing = true
+        }
+        return try {
             val entries = fileVault.scanAndSync()
-            val filesJson = JSONArray()
-            entries.forEach { e ->
-                filesJson.put(
-                    JSONObject().apply {
-                        put("path", e.path)
-                        put("name", e.name)
-                        put("sizeBytes", e.sizeBytes)
-                        put("contentHash", e.contentHash)
-                        put("mimeType", e.mimeType)
-                        put("encryptedDek", e.encryptedDek)
-                        // thumbnailBase64 is NOT sent during sync — thumbnails are requested on-demand
-                    }
-                )
+            val syncId = UUID.randomUUID().toString()
+            val batchSize = 500
+            val totalChunks = maxOf(1, (entries.size + batchSize - 1) / batchSize)
+            entries.chunked(batchSize).forEachIndexed { chunkIndex, chunk ->
+                val batchJson = JSONArray()
+                chunk.forEach { e ->
+                    batchJson.put(
+                        JSONObject().apply {
+                            put("path", e.path)
+                            put("name", e.name)
+                            put("sizeBytes", e.sizeBytes)
+                            put("contentHash", e.contentHash)
+                            put("mimeType", e.mimeType)
+                            put("encryptedDek", e.encryptedDek)
+                            if (e.isTrashed) put("isTrashed", true)
+                        }
+                    )
+                }
+                send(JSONObject().apply {
+                    put("type", "file_sync_chunk")
+                    put("syncId", syncId)
+                    put("chunkIndex", chunkIndex)
+                    put("totalChunks", totalChunks)
+                    put("files", batchJson)
+                    if (!syncRequestId.isNullOrEmpty()) put("syncRequestId", syncRequestId)
+                })
+                Thread.sleep(15) // Gentle delay to avoid socket buffer congestion
             }
-            send(JSONObject().apply {
-                put("type", "file_sync")
-                put("files", filesJson)
-                if (!syncRequestId.isNullOrEmpty()) put("syncRequestId", syncRequestId)
-            })
             Log.i(TAG, "Sent file index to broker: ${entries.size} entries")
-            return true
+            true
         } catch (error: Exception) {
             Log.e(TAG, "Could not scan and sync Android storage", error)
-            return false
+            false
+        } finally {
+            synchronized(syncLock) {
+                isSyncing = false
+            }
         }
     }
 
-    private fun connect() {
+    private fun cancelReconnect() {
+        reconnectFuture?.cancel(true)
+        reconnectFuture = null
+    }
+
+    private fun connectLocked() {
         if (stopped) return
+        cancelReconnect()
+
+        // Clean up and cancel any previous socket before opening a new one
+        val oldSocket = socket
+        socket = null
+        oldSocket?.cancel()
+
+        currentState = State.CONNECTING
         onStateChange(State.CONNECTING)
 
         val wsUrl = brokerBaseUrl
@@ -141,14 +291,20 @@ class BrokerSocketClient(
     }
 
     private fun scheduleReconnect() {
-        if (stopped) return
-        reconnectAttempt++
-        val delaySeconds = min(30.0, 2.0.pow(reconnectAttempt)).toLong()
-        Log.i(TAG, "Reconnecting in ${delaySeconds}s (attempt $reconnectAttempt)")
-        Thread {
-            Thread.sleep(delaySeconds * 1000)
-            connect()
-        }.start()
+        synchronized(connectLock) {
+            if (stopped) return
+            cancelReconnect()
+            reconnectAttempt++
+            val delaySeconds = min(30.0, 2.0.pow(reconnectAttempt)).toLong()
+            Log.i(TAG, "Reconnecting in ${delaySeconds}s (attempt $reconnectAttempt)")
+            reconnectFuture = scheduler.schedule({
+                synchronized(connectLock) {
+                    if (!stopped && (currentState != State.ONLINE || socket == null)) {
+                        connectLocked()
+                    }
+                }
+            }, delaySeconds, TimeUnit.SECONDS)
+        }
     }
 
     private fun send(json: JSONObject) {
@@ -157,80 +313,123 @@ class BrokerSocketClient(
 
     private val listener = object : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
-            reconnectAttempt = 0
-            onStateChange(State.ONLINE)
-            sendDeviceHello(webSocket)
-            Thread {
-                while (!stopped && socket === webSocket) {
-                    Thread.sleep(60_000)
-                    if (!stopped && socket === webSocket) sendDeviceHello(webSocket)
+            synchronized(connectLock) {
+                if (stopped || socket !== webSocket) {
+                    Log.d(TAG, "Ignoring onOpen for stale or stopped socket")
+                    webSocket.cancel()
+                    return
                 }
-            }.start()
-            Thread {
+                reconnectAttempt = 0
+                cancelReconnect()
+                currentState = State.ONLINE
+                onStateChange(State.ONLINE)
+            }
+            sendDeviceHello(webSocket)
+            workerPool.execute {
+                while (!stopped && socket === webSocket) {
+                    try {
+                        Thread.sleep(60_000)
+                        if (!stopped && socket === webSocket) sendDeviceHello(webSocket)
+                    } catch (_: InterruptedException) {
+                        break
+                    }
+                }
+            }
+            workerPool.execute {
                 pushFileSync()
-                Thread.sleep(3_000)
-                if (!stopped && socket === webSocket) pushFileSync()
-            }.start()
+            }
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
-            val msg = try {
-                JSONObject(text)
-            } catch (e: Exception) {
-                Log.w(TAG, "Malformed message from broker: $text")
+            if (webSocket !== socket) {
+                Log.d(TAG, "Ignoring message from stale socket")
                 return
             }
-
-            when (msg.optString("type")) {
-                "client_unlinked" -> onClientRemoved(msg.optString("userId"))
-                "client_presence" -> onClientPresence(msg.optString("userId"), msg.optBoolean("online", false))
-                "node_unlinked" -> {
-                    val reason = msg.optString("reason").ifEmpty { "Node removed from web dashboard" }
-                    Log.w(TAG, "Broker notified node_unlinked: $reason")
-                    stopped = true
-                    socket?.close(1000, "node_unlinked")
-                    socket = null
-                    onStateChange(State.OFFLINE)
-                    onNodeRemoved(reason)
+            workerPool.execute {
+                val msg = try {
+                    JSONObject(text)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Malformed message from broker: $text")
+                    return@execute
                 }
-                "fetch_request" -> handleFetchRequest(msg)
-                "fetch_chunk" -> handleFetchChunk(msg)
-                "thumbnail_request" -> handleThumbnailRequest(msg)
-                "cancel_request" -> cancelledRequests.add(msg.optString("requestId"))
-                "upload_request" -> handleUploadRequest(msg)
-                "sync_request" -> handleSyncRequest(msg)
-                "delete_request" -> handleDeleteRequest(msg)
-                "trash_request" -> handleTrashRequest(msg)
-                "folder_request" -> handleFolderRequest(msg)
-                else -> Log.d(TAG, "Unhandled message type: ${msg.optString("type")}")
+
+                when (msg.optString("type")) {
+                    "client_unlinked" -> onClientRemoved(msg.optString("userId"))
+                    "client_presence" -> onClientPresence(msg.optString("userId"), msg.optBoolean("online", false))
+                    "node_unlinked" -> {
+                        val reason = msg.optString("reason").ifEmpty { "Node removed from web dashboard" }
+                        Log.w(TAG, "Broker notified node_unlinked: $reason")
+                        synchronized(connectLock) {
+                            stopped = true
+                            cancelReconnect()
+                            currentState = State.OFFLINE
+                            val s = socket
+                            socket = null
+                            s?.close(1000, "node_unlinked")
+                            onStateChange(State.OFFLINE)
+                        }
+                        onNodeRemoved(reason)
+                    }
+                    "fetch_request" -> handleFetchRequest(msg)
+                    "fetch_chunk" -> handleFetchChunk(msg)
+                    "thumbnail_request" -> handleThumbnailRequest(msg)
+                    "cancel_request" -> cancelledRequests.add(msg.optString("requestId"))
+                    "upload_request" -> handleUploadRequest(msg)
+                    "upload_start" -> handleUploadStart(msg)
+                    "upload_chunk" -> handleUploadChunk(msg)
+                    "upload_complete" -> handleUploadComplete(msg)
+                    "sync_request" -> handleSyncRequest(msg)
+                    "delete_request" -> handleDeleteRequest(msg)
+                    "trash_request" -> handleTrashRequest(msg)
+                    "folder_request" -> handleFolderRequest(msg)
+                    else -> Log.d(TAG, "Unhandled message type: ${msg.optString("type")}")
+                }
             }
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-            if (stopped) return
-            Log.w(TAG, "Socket failure: ${t.message}")
-            if (response?.code == 401 || response?.code == 404) {
-                Log.w(TAG, "Socket rejected by broker (HTTP ${response.code}) — node unlinked or invalid token")
-                stopped = true
+            synchronized(connectLock) {
+                if (stopped || webSocket !== socket) {
+                    Log.d(TAG, "Ignoring onFailure for stale or stopped socket: ${t.message}")
+                    return
+                }
+                Log.w(TAG, "Socket failure: ${t.message}")
+                if (response?.code == 401 || response?.code == 404) {
+                    Log.w(TAG, "Socket rejected by broker (HTTP ${response.code}) — node unlinked or invalid token")
+                    stopped = true
+                    cancelReconnect()
+                    socket = null
+                    currentState = State.OFFLINE
+                    onStateChange(State.OFFLINE)
+                    onNodeRemoved("Device token rejected (HTTP ${response.code})")
+                    return
+                }
+                currentState = State.OFFLINE
                 onStateChange(State.OFFLINE)
-                onNodeRemoved("Device token rejected (HTTP ${response.code})")
-                return
+                scheduleReconnect()
             }
-            onStateChange(State.OFFLINE)
-            scheduleReconnect()
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-            if (stopped) return
-            if (code == 4004 || reason.contains("re-pair", ignoreCase = true) || reason.contains("unlinked", ignoreCase = true)) {
-                Log.w(TAG, "Device connection closed by broker (unlinked/deleted): $reason (code $code)")
-                stopped = true
+            synchronized(connectLock) {
+                if (stopped || webSocket !== socket) {
+                    Log.d(TAG, "Ignoring onClosed for stale or stopped socket: $reason")
+                    return
+                }
+                if (code == 4004 || reason.contains("re-pair", ignoreCase = true) || reason.contains("unlinked", ignoreCase = true)) {
+                    Log.w(TAG, "Device connection closed by broker (unlinked/deleted): $reason (code $code)")
+                    stopped = true
+                    cancelReconnect()
+                    socket = null
+                    currentState = State.OFFLINE
+                    onStateChange(State.OFFLINE)
+                    onNodeRemoved(reason)
+                    return
+                }
+                currentState = State.OFFLINE
                 onStateChange(State.OFFLINE)
-                onNodeRemoved(reason)
-                return
+                scheduleReconnect()
             }
-            onStateChange(State.OFFLINE)
-            if (!stopped) scheduleReconnect()
         }
     }
 
@@ -352,16 +551,50 @@ class BrokerSocketClient(
             put("type", "upload_result")
             put("requestId", requestId)
         }
+
         try {
             val encrypted = Base64.decode(msg.getString("dataBase64"), Base64.NO_WRAP)
-            fileVault.writeUploadedFile(path, encrypted, msg.getString("encryptedDek"))
+            val entry = fileVault.writeUploadedFile(path, encrypted, msg.getString("encryptedDek"))
             reply.put("ok", true)
             send(reply)
-            pushFileSync()
+            sendDeltaUpdate(entry)
         } catch (error: Exception) {
             Log.w(TAG, "Upload failed for $path", error)
             reply.put("ok", false)
             reply.put("error", error.message ?: "Upload failed on device")
+            send(reply)
+        }
+    }
+
+    private fun handleUploadStart(msg: JSONObject) {
+        val uploadId = msg.getString("uploadId")
+        incomingUploads[uploadId] = IncomingUpload(msg.getString("path"), msg.getString("encryptedDek"), msg.getLong("totalBytes"), msg.getInt("totalChunks"))
+        send(JSONObject().apply { put("type", "upload_result"); put("requestId", msg.getString("requestId")); put("ok", true) })
+    }
+
+    private fun handleUploadChunk(msg: JSONObject) {
+        val upload = incomingUploads[msg.getString("uploadId")]
+        val index = msg.getInt("chunkIndex")
+        val ok = upload != null && index >= 0 && index < upload.totalChunks
+        if (ok) upload!!.chunks.putIfAbsent(index, Base64.decode(msg.getString("dataBase64"), Base64.NO_WRAP))
+        send(JSONObject().apply {
+            put("type", "upload_result"); put("requestId", msg.getString("requestId")); put("ok", ok)
+            if (!ok) put("error", "Unknown or invalid upload chunk")
+        })
+    }
+
+    private fun handleUploadComplete(msg: JSONObject) {
+        val upload = incomingUploads.remove(msg.getString("uploadId"))
+        val reply = JSONObject().apply { put("type", "upload_result"); put("requestId", msg.getString("requestId")) }
+        try {
+            require(upload != null && upload.chunks.size == upload.totalChunks)
+            val chunks = (0 until upload.totalChunks).map { upload.chunks[it] ?: error("Missing upload chunk $it") }
+            val entry = fileVault.writeUploadedChunks(upload.path, chunks, upload.encryptedDek, upload.totalBytes)
+            reply.put("ok", true)
+            send(reply)
+            sendDeltaUpdate(entry)
+        } catch (error: Exception) {
+            reply.put("ok", false).put("error", error.message ?: "Chunked upload failed on device")
             send(reply)
         }
     }
@@ -380,7 +613,8 @@ class BrokerSocketClient(
             if (deleted) {
                 reply.put("ok", true)
                 send(reply)
-                pushFileSync()
+                if (permanent) sendDeltaPermanentDelete(path)
+                else sendDeltaTrash(path)
             } else {
                 reply.put("ok", false)
                 reply.put("error", "File could not be deleted from storage")
@@ -413,7 +647,13 @@ class BrokerSocketClient(
             reply.put("ok", ok)
             if (!ok) reply.put("error", "Recycle bin operation failed on device")
             send(reply)
-            if (ok) pushFileSync()
+            if (ok) {
+                when (action) {
+                    "trash" -> sendDeltaTrash(path)
+                    "restore" -> sendDeltaRestore(path)
+                    "permanent" -> sendDeltaPermanentDelete(path)
+                }
+            }
         } catch (error: Exception) {
             Log.w(TAG, "Recycle bin operation failed for $path ($action)", error)
             reply.put("ok", false)

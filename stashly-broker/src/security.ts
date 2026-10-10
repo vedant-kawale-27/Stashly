@@ -78,7 +78,7 @@ export function verifyTotp(secret: string, code: string, now = Date.now()): bool
 
 export async function audit(action: string, actorUserId?: string, req?: { ip?: string }, targetType?: string, targetId?: string, metadata?: object) {
   try {
-    await prisma.auditLog.create({ data: { action, actorUserId, ipAddress: req?.ip, targetType, targetId, metadata } });
+    await prisma.auditLog.create({ data: { action, actorUserId, ipAddress: req?.ip, targetType, targetId, metadata: metadata ? JSON.stringify(metadata) : null } });
   } catch (error) {
     console.error("Security audit write failed:", error);
   }

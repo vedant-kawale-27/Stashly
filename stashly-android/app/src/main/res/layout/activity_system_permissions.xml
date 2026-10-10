@@ -53,6 +53,7 @@
                     <include layout="@layout/item_system_permission_notifications" />
                     <include layout="@layout/item_system_permission_battery" />
                     <include layout="@layout/item_system_permission_storage" />
+                    <include layout="@layout/item_system_permission_sdcard" />
 
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>

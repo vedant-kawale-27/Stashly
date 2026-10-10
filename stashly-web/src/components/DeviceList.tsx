@@ -11,6 +11,7 @@ import { BrokerClient, Device } from "../api";
 import { base64ToBytes } from "../crypto";
 import { BluetoothKeyModal } from "./BluetoothKeyModal";
 import { WindowsMountModal } from "./WindowsMountModal";
+import { subscribeRealtime } from "../realtime";
 
 function formatTimestamp(value?: string | null): string {
   if (!value) return "Never";
@@ -49,7 +50,11 @@ function sameDevice(left: Device, right: Device): boolean {
     left.batteryLevel === right.batteryLevel &&
     left.storageTotalMb === right.storageTotalMb &&
     left.storageFreeMb === right.storageFreeMb &&
+    left.sdcardMounted === right.sdcardMounted &&
+    left.sdcardTotalMb === right.sdcardTotalMb &&
+    left.sdcardFreeMb === right.sdcardFreeMb &&
     left.status === right.status &&
+    left.sharingPaused === right.sharingPaused &&
     left.storageQuotaMb === right.storageQuotaMb &&
     left.lastSeenAt === right.lastSeenAt &&
     left.fileCount === right.fileCount &&
@@ -101,6 +106,7 @@ export function DeviceList({
   const [keyMessage, setKeyMessage] = useState<Record<string, string>>({});
   const [bluetoothDevice, setBluetoothDevice] = useState<Device | null>(null);
   const [keyManagerDevice, setKeyManagerDevice] = useState<Device | null>(null);
+  const [expandedDeviceIds, setExpandedDeviceIds] = useState<Set<string>>(new Set());
   const loadingRef = React.useRef(false);
 
   async function loadDevices(force = false, syncFiles = false) {
@@ -134,6 +140,46 @@ export function DeviceList({
     const interval = setInterval(() => loadDevices(true), 6000);
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => subscribeRealtime((event) => {
+    if (!event.deviceId) return;
+    if (event.type === "device_sharing_changed") {
+      setDevices((previous) => {
+        const next = previous.map((device) => device.id === event.deviceId
+          ? {
+              ...device,
+              ...(event.sharingPaused !== undefined ? { sharingPaused: event.sharingPaused } : {}),
+              ...(event.sharingEnabled !== undefined ? { sharingEnabled: event.sharingEnabled } : {}),
+            }
+          : device);
+        deviceListCache.set(cacheKey, next);
+        return next;
+      });
+      void loadDevices(true);
+    } else if (event.type === "device_telemetry_changed") {
+      setDevices((previous) => {
+        const next = previous.map((device) => device.id === event.deviceId
+          ? {
+              ...device,
+              ...(event.status ? { status: event.status } : {}),
+              ...(event.modelName !== undefined ? { modelName: event.modelName } : {}),
+              ...(event.modelNumber !== undefined ? { modelNumber: event.modelNumber } : {}),
+              ...(event.androidVersion !== undefined ? { androidVersion: event.androidVersion } : {}),
+              ...(event.osVersion !== undefined ? { osVersion: event.osVersion } : {}),
+              ...(event.appVersion !== undefined ? { appVersion: event.appVersion } : {}),
+              ...(event.batteryLevel !== undefined ? { batteryLevel: event.batteryLevel } : {}),
+              ...(event.storageTotalMb !== undefined ? { storageTotalMb: event.storageTotalMb } : {}),
+              ...(event.storageFreeMb !== undefined ? { storageFreeMb: event.storageFreeMb } : {}),
+              ...(event.sdcardMounted !== undefined ? { sdcardMounted: event.sdcardMounted } : {}),
+              ...(event.sdcardTotalMb !== undefined ? { sdcardTotalMb: event.sdcardTotalMb } : {}),
+              ...(event.sdcardFreeMb !== undefined ? { sdcardFreeMb: event.sdcardFreeMb } : {}),
+            }
+          : device);
+        deviceListCache.set(cacheKey, next);
+        return next;
+      });
+    }
+  }), [cacheKey]);
 
   async function handleRename(deviceId: string) {
     if (!newName.trim()) return;
@@ -197,21 +243,17 @@ export function DeviceList({
       </div>
 
       <div className="panel-box-body">
-        {error && (
-          <div style={{ background: "rgba(239, 68, 68, 0.15)", color: "#ef4444", padding: "10px 14px", borderRadius: "var(--radius-sm)", fontSize: "0.85rem", marginBottom: 14 }}>
-            {error}
-          </div>
-        )}
+        {error && <div className="ui-alert-error">{error}</div>}
 
         {loading && devices.length === 0 ? (
-          <div style={{ textAlign: "center", padding: "28px 0", color: "var(--text-muted)", fontSize: "0.88rem" }}>
+          <div className="ui-loading-state">
             Querying active storage nodes…
           </div>
         ) : devices.length === 0 ? (
-          <div style={{ textAlign: "center", padding: "32px 16px", color: "var(--text-muted)" }}>
-            <div style={{ fontSize: "2rem", marginBottom: 8 }}>📱</div>
-            <h4 style={{ color: "var(--text-main)", marginBottom: 4 }}>No nodes connected</h4>
-            <p style={{ fontSize: "0.85rem" }}>
+          <div className="ui-empty-state">
+            <div className="ui-empty-state-icon">📱</div>
+            <h4>No nodes connected</h4>
+            <p>
               Pair your Android handset using the button above to start accessing your encrypted vault.
             </p>
           </div>
@@ -220,6 +262,14 @@ export function DeviceList({
             {devices.map((d) => {
               const isSelected = selectedDeviceId === d.id;
               const isOnline = d.status === "online";
+              const statusLabel = d.sharingPaused ? "Sharing paused by owner" : isOnline ? "Live Stream" : "Offline";
+              const isExpanded = expandedDeviceIds.has(d.id);
+              const toggleExpanded = () => setExpandedDeviceIds((previous) => {
+                const next = new Set(previous);
+                if (next.has(d.id)) next.delete(d.id);
+                else next.add(d.id);
+                return next;
+              });
 
               return (
                 <div
@@ -228,35 +278,28 @@ export function DeviceList({
                   onClick={() => onSelectDevice(d.id)}
                 >
                   <div className="node-item-top">
-                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      <span style={{ fontSize: "1.4rem" }}>
+                    <div className="node-item-identity">
+                      <span className="node-item-icon">
                         {d.platform === "windows" ? "💻" : "📱"}
                       </span>
                       <div>
                         {renamingId === d.id ? (
-                          <div style={{ display: "flex", gap: 4, alignItems: "center" }} onClick={(e) => e.stopPropagation()}>
+                          <div className="node-rename-row" onClick={(e) => e.stopPropagation()}>
                             <input
                               type="text"
                               value={newName}
                               onChange={(e) => setNewName(e.target.value)}
                               autoFocus
-                              style={{
-                                padding: "2px 8px",
-                                borderRadius: "var(--radius-sm)",
-                                border: "1px solid var(--primary)",
-                                fontSize: "0.85rem",
-                                background: "var(--bg-card)",
-                                color: "var(--text-main)"
-                              }}
+                              className="node-rename-input"
                             />
                             <button className="btn-primary btn-small" onClick={() => handleRename(d.id)}>Save</button>
                             <button className="btn-secondary btn-small" onClick={() => setRenamingId(null)}>✕</button>
                           </div>
                         ) : (
-                          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <div className="node-name-row">
                             <span className="node-item-name">{d.name}</span>
                             <button
-                              style={{ background: "none", opacity: 0.6, fontSize: "0.8rem", padding: "0 2px" }}
+                              className="node-edit-button"
                               title="Rename node"
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -268,18 +311,25 @@ export function DeviceList({
                             </button>
                           </div>
                         )}
-                        <div style={{ fontSize: "0.78rem", color: "var(--text-muted)", marginTop: 2 }}>
-                          {d.osVersion ? `Android OS ${d.osVersion}` : "Android Storage Node"}
+                        <div className="node-card-meta">
+                          <span className={masterKeys[d.id] ? "node-key-badge configured" : "node-key-badge"}>● {masterKeys[d.id] ? "Key configured" : "Key not set"}</span>
+                          <span>·</span>
+                          <span>{d.fileCount ?? 0} files · {d.sharedWith?.length ?? 0} clients · {d.storageQuotaMb > 0 ? `${d.storageQuotaMb} MB` : "Uncapped"}</span>
                         </div>
                       </div>
                     </div>
 
-                    <span className="badge-e2e" style={{ background: isOnline ? "rgba(16, 185, 129, 0.15)" : "rgba(100, 116, 139, 0.15)", color: isOnline ? "#10b981" : "var(--text-muted)" }}>
-                      ● {isOnline ? "Live Stream" : "Offline"}
+                    <span className={`node-status-badge ${d.sharingPaused ? "paused" : isOnline ? "online" : "offline"}`}>
+                      ● {statusLabel}
                     </span>
                   </div>
 
-                  <div className="device-card-section" onClick={(e) => e.stopPropagation()}>
+                  {d.sharingEnabled === false && (
+                    <div className="node-sharing-warning">⚠ Your access is currently stopped on the Android node.</div>
+                  )}
+
+                  {isExpanded && <div className="node-expanded-details" onClick={(e) => e.stopPropagation()}>
+                  <div className="device-card-section">
                     <div className="device-card-section-heading">
                       <div>
                         <span className="device-card-label">Master encryption key</span>
@@ -297,7 +347,14 @@ export function DeviceList({
                     <div><span>Model</span><strong>{d.modelName || d.name}</strong><small>{d.modelNumber || "Model number unavailable"}</small></div>
                     <div><span>Android / OS</span><strong>{d.androidVersion || d.osVersion || "Unavailable"}</strong><small>{d.platform}</small></div>
                     <div><span>Battery</span><strong>{typeof d.batteryLevel === "number" ? `${d.batteryLevel}%` : "Unavailable"}</strong><small>{isOnline ? "Live node report" : "Last reported value"}</small></div>
-                    <div><span>Storage</span><strong>{d.storageFreeMb != null && d.storageTotalMb != null ? `${formatSize(d.storageFreeMb)} free` : "Unavailable"}</strong><small>{d.storageTotalMb != null ? `${formatSize(d.storageTotalMb)} total` : "Awaiting node report"}</small></div>
+                    <div><span>Phone Storage</span><strong>{d.storageFreeMb != null && d.storageTotalMb != null ? `${formatSize(d.storageFreeMb)} free` : "Unavailable"}</strong><small>{d.storageTotalMb != null ? `${formatSize(d.storageTotalMb)} total` : "Awaiting node report"}</small></div>
+                    {d.platform === "android" && (
+                      <div className={d.sdcardMounted === false ? "device-info-unmounted" : ""}>
+                        <span>SD Card</span>
+                        <strong>{d.sdcardMounted && d.sdcardFreeMb != null && d.sdcardTotalMb != null ? `${formatSize(d.sdcardFreeMb)} free` : d.sdcardMounted === false ? "Not Mounted" : "Unavailable"}</strong>
+                        <small>{d.sdcardMounted && d.sdcardTotalMb != null ? `${formatSize(d.sdcardTotalMb)} total` : d.sdcardMounted === false ? "SD card not inserted" : "Awaiting node report"}</small>
+                      </div>
+                    )}
                   </div>
 
                   {/* Each linked client keeps its own scope and sharing state. */}
@@ -311,7 +368,7 @@ export function DeviceList({
                           <div key={u.userId} style={{ background: "var(--bg-card)", border: "1px solid var(--border-subtle)", borderRadius: "var(--radius-sm)", padding: "7px 9px", fontSize: "0.75rem" }}>
                             <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
                               <strong style={{ color: "var(--text-main)" }}>{u.email}</strong>
-                              <span style={{ color: sharingStopped ? "#f59e0b" : clientOnline ? "#10b981" : "var(--text-muted)" }}>
+                              <span className={`client-status-text ${sharingStopped ? "stopped" : clientOnline ? "online" : "offline"}`}>
                                 {sharingStopped ? "Sharing stopped" : clientOnline ? "Online" : "Offline"}
                               </span>
                             </div>
@@ -325,30 +382,10 @@ export function DeviceList({
                     </div>
                   )}
 
-                  {d.sharingEnabled === false && (
-                    <div style={{ color: "#f59e0b", fontSize: "0.78rem", marginTop: 7 }}>
-                      Your access is currently stopped on the Android node.
-                    </div>
-                  )}
-
-                  {/* Statistics */}
-                  <div className="node-stats-bar-3">
-                    <div>
-                      <span style={{ color: "var(--text-muted)", display: "block" }}>Synced Files</span>
-                      <span style={{ fontWeight: 700, color: "var(--text-main)" }} className="font-mono">{d.fileCount ?? 0}</span>
-                    </div>
-                    <div>
-                      <span style={{ color: "var(--text-muted)", display: "block" }}>Clients</span>
-                      <span style={{ fontWeight: 700, color: "var(--text-main)" }}>{d.sharedWith?.length ?? 0}</span>
-                    </div>
-                    <div>
-                      <span style={{ color: "var(--text-muted)", display: "block" }}>Offered Space</span>
-                      <span style={{ fontWeight: 700, color: "var(--text-main)" }} className="font-mono">{d.storageQuotaMb > 0 ? `${d.storageQuotaMb} MB` : "Uncapped"}</span>
-                    </div>
-                  </div>
+                  </div>}
 
                   {/* Actions */}
-                  <div style={{ display: "flex", gap: 6, marginTop: 10 }} onClick={(e) => e.stopPropagation()}>
+                  <div className="node-action-row" onClick={(e) => e.stopPropagation()}>
                     <button
                       className={`btn-small ${isSelected ? "btn-primary" : "btn-secondary"}`}
                       style={{ flex: 1 }}
@@ -357,19 +394,21 @@ export function DeviceList({
                       {isSelected ? "✓ Active Vault" : "Browse Files"}
                     </button>
                     <button
-                      className="btn-secondary btn-small"
+                      className="btn-ghost btn-small"
                       title="Mount as Windows Drive"
                       onClick={() => setMountDevice(d)}
                     >
-                      💻 Mount Z:
+                      💻 Mount
                     </button>
                     <button
-                      className="btn-secondary btn-small"
-                      style={{ color: "#ef4444" }}
+                      className="btn-ghost btn-small danger-button"
                       title="Remove my connection"
                       onClick={() => handleUnpair(d)}
                     >
-                      🗑️
+                      🗑️ Remove
+                    </button>
+                    <button className="btn-ghost btn-small node-disclosure-button" onClick={toggleExpanded} aria-expanded={isExpanded} aria-label={isExpanded ? `Collapse ${d.name} details` : `Expand ${d.name} details`}>
+                      {isExpanded ? "⌃" : "⌄"} Details
                     </button>
                   </div>
                 </div>

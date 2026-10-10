@@ -1,8 +1,0 @@
-ALTER TABLE "Device" DROP COLUMN IF EXISTS "osVersion";
-ALTER TABLE "Device" DROP COLUMN IF EXISTS "appVersion";
-ALTER TABLE "Device" DROP COLUMN IF EXISTS "modelName";
-ALTER TABLE "Device" DROP COLUMN IF EXISTS "modelNumber";
-ALTER TABLE "Device" DROP COLUMN IF EXISTS "androidVersion";
-ALTER TABLE "Device" DROP COLUMN IF EXISTS "batteryLevel";
-ALTER TABLE "Device" DROP COLUMN IF EXISTS "storageTotalMb";
-ALTER TABLE "Device" DROP COLUMN IF EXISTS "storageFreeMb";

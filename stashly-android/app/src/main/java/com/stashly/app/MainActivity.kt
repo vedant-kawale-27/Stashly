@@ -111,6 +111,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 StorageNodeService.ACTION_CLIENT_UNLINKED -> { fetchLiveBrokerStatus(); showPendingClientRemovedDialog() }
                 StorageNodeService.ACTION_CLIENT_PRESENCE -> fetchLiveBrokerStatus()
+                StorageNodeService.ACTION_BROKER_STATE_CHANGED -> applyNodeStatus()
             }
         }
     }
@@ -128,7 +129,8 @@ class MainActivity : AppCompatActivity() {
         pairingCtrl = PairingFlowController(storage, vm)
 
         nodeCtrl.scheduleTrashCleanup(applicationContext)
-        if (storage.isPaired) KeyManager(storage).getOrCreateMasterKey()
+        KeyManager(storage).getOrCreateMasterKey()
+        FileVault.startBackgroundWarmup(this, storage)
 
         binding.bottomNavigation.setOnItemSelectedListener { item ->
             when (item.itemId) { R.id.nav_storage -> showPage(0); R.id.nav_connect -> showPage(1); R.id.nav_settings -> showPage(2) }; true
@@ -138,6 +140,7 @@ class MainActivity : AppCompatActivity() {
 
         binding.btnScanQr.setOnClickListener { onScanQrClicked() }
         binding.btnToggleNode.setOnClickListener {
+            binding.btnToggleNode.isEnabled = false
             nodeCtrl.toggleNode(
                 onStartService = { startForegroundService(Intent(this, StorageNodeService::class.java)) },
                 onStopService = { stopService(Intent(this, StorageNodeService::class.java)) },
@@ -145,6 +148,7 @@ class MainActivity : AppCompatActivity() {
                 onStatusChange = { started ->
                     Toast.makeText(this, getString(if (started) R.string.toast_node_started else R.string.toast_node_stopped), Toast.LENGTH_SHORT).show()
                     applyNodeStatus()
+                    binding.btnToggleNode.postDelayed({ binding.btnToggleNode.isEnabled = true }, 600)
                 }
             )
         }
@@ -167,6 +171,7 @@ class MainActivity : AppCompatActivity() {
         val filter = IntentFilter(StorageNodeService.ACTION_NODE_UNLINKED).apply {
             addAction(StorageNodeService.ACTION_CLIENT_UNLINKED)
             addAction(StorageNodeService.ACTION_CLIENT_PRESENCE)
+            addAction(StorageNodeService.ACTION_BROKER_STATE_CHANGED)
         }
         androidx.core.content.ContextCompat.registerReceiver(this, unlinkedReceiver, filter, androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED)
 
@@ -182,7 +187,13 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
     }
 
-    override fun onResume() { super.onResume(); refreshAll(); StashlyWidgetProvider.updateAll(this); showPendingClientRemovedDialog() }
+    override fun onResume() {
+        super.onResume()
+        refreshAll()
+        FileVault.startBackgroundWarmup(this, storage)
+        StashlyWidgetProvider.updateAll(this)
+        showPendingClientRemovedDialog()
+    }
 
     // ── Navigation & refresh ──
 
@@ -197,6 +208,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun refreshAll() {
         nodeCtrl.refreshStorageMeter(); applyStorageMeter()
+        nodeCtrl.refreshSdCardMeter(this); applySdCardMeter()
         nodeCtrl.refreshNodeStatus(); applyNodeStatus()
         fetchLiveBrokerStatus()
     }
@@ -218,6 +230,37 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun applySdCardMeter() {
+        val data = vm.sdCardMeterData
+        if (data == null || !data.isSupported) {
+            binding.sdcardDivider.visibility = View.GONE
+            binding.sdcardStorageSection.visibility = View.GONE
+            return
+        }
+
+        binding.sdcardDivider.visibility = View.VISIBLE
+        binding.sdcardStorageSection.visibility = View.VISIBLE
+
+        if (data.isMounted) {
+            val usedF = getString(R.string.storage_gb_format, data.usedGb)
+            val freeF = getString(R.string.storage_gb_format, data.freeGb)
+            val totalF = getString(R.string.storage_gb_format, data.totalGb)
+            binding.sdcardProgressBar.alpha = 1.0f
+            binding.sdcardProgressBar.progress = data.usedPercent
+            binding.sdcardMainText.text = getString(R.string.storage_main_format, data.usedPercent, usedF, totalF)
+            binding.sdcardUsedText.text = usedF
+            binding.sdcardFreeText.text = freeF
+            binding.sdcardTotalText.text = totalF
+        } else {
+            binding.sdcardProgressBar.alpha = 0.35f
+            binding.sdcardProgressBar.progress = 0
+            binding.sdcardMainText.text = getString(R.string.sdcard_not_mounted)
+            binding.sdcardUsedText.text = "--"
+            binding.sdcardFreeText.text = "--"
+            binding.sdcardTotalText.text = "--"
+        }
+    }
+
     private fun applyNodeStatus() {
         nodeCtrl.refreshNodeStatus()
         if (!vm.nodePaired) {
@@ -227,12 +270,29 @@ class MainActivity : AppCompatActivity() {
             binding.layoutPairedClientDetails.visibility = View.GONE; binding.connectedClientsEmptyText.visibility = View.VISIBLE
         } else {
             binding.layoutPairedClientDetails.visibility = View.VISIBLE; binding.connectedClientsEmptyText.visibility = View.GONE
-            binding.nodeBrokerInfoText.text = getString(R.string.node_broker_format, vm.brokerUrl ?: "")
             binding.btnToggleNode.isEnabled = true
             if (vm.nodeRunning) {
-                binding.nodeStatusText.text = getString(R.string.node_status_active); binding.btnToggleNode.text = getString(R.string.btn_stop_node); binding.btnSyncNow.isEnabled = true
+                binding.btnToggleNode.text = getString(R.string.btn_stop_node)
+                binding.btnSyncNow.isEnabled = vm.isLive
+                when (vm.brokerConnectionState) {
+                    "ONLINE" -> {
+                        binding.nodeStatusText.text = getString(R.string.node_status_active)
+                        binding.nodeBrokerInfoText.text = getString(R.string.node_broker_connected_format, vm.brokerUrl ?: "")
+                    }
+                    "CONNECTING" -> {
+                        binding.nodeStatusText.text = getString(R.string.node_status_connecting)
+                        binding.nodeBrokerInfoText.text = getString(R.string.node_broker_connecting_format, vm.brokerUrl ?: "")
+                    }
+                    else -> {
+                        binding.nodeStatusText.text = getString(R.string.node_status_broker_unavailable)
+                        binding.nodeBrokerInfoText.text = getString(R.string.node_broker_unavailable_format, vm.brokerUrl ?: "")
+                    }
+                }
             } else {
-                binding.nodeStatusText.text = getString(R.string.node_status_stopped); binding.btnToggleNode.text = getString(R.string.btn_start_node); binding.btnSyncNow.isEnabled = false
+                binding.nodeStatusText.text = getString(R.string.node_status_stopped)
+                binding.nodeBrokerInfoText.text = getString(R.string.node_broker_format, vm.brokerUrl ?: "")
+                binding.btnToggleNode.text = getString(R.string.btn_start_node)
+                binding.btnSyncNow.isEnabled = false
             }
             binding.lastActiveTimestampText.text = getString(R.string.last_synced_format, vm.lastSyncTime)
             binding.clientPlatformText.text = getString(R.string.client_platform_title)
@@ -354,9 +414,9 @@ class MainActivity : AppCompatActivity() {
         fun addOption(label: String, action: () -> Unit) {
             optionLayout.addView(android.widget.Button(this).apply { text = label; setOnClickListener { dialog.dismiss(); action() } })
         }
-        addOption(getString(R.string.scope_option_all)) { SystemPermissionCoordinator.withStorageAccess({ doSavePairingScope(pairing, AccessScope()) }, ::showStorageAccessRequired) }
-        addOption(getString(R.string.scope_option_folder)) { SystemPermissionCoordinator.withStorageAccess({ beginFolderScopePicker(pairing) }, ::showStorageAccessRequired) }
-        addOption(getString(R.string.scope_option_file)) { SystemPermissionCoordinator.withStorageAccess({ beginFileScopePicker(pairing) }, ::showStorageAccessRequired) }
+        addOption(getString(R.string.scope_option_all)) { SystemPermissionCoordinator.withStorageAccess(this, { doSavePairingScope(pairing, AccessScope()) }, ::showStorageAccessRequired) }
+        addOption(getString(R.string.scope_option_folder)) { SystemPermissionCoordinator.withStorageAccess(this, { beginFolderScopePicker(pairing) }, ::showStorageAccessRequired) }
+        addOption(getString(R.string.scope_option_file)) { SystemPermissionCoordinator.withStorageAccess(this, { beginFileScopePicker(pairing) }, ::showStorageAccessRequired) }
         dialog = AlertDialog.Builder(this).setTitle(getString(R.string.dialog_access_scope_title)).setMessage(getString(R.string.dialog_access_scope_msg, pairing.userEmail ?: "this client")).setView(optionLayout)
             .setNegativeButton(getString(R.string.dialog_btn_cancel)) { _, _ -> vm.pendingScopePairing = null; if (vm.pendingScopeIsPairing) storage.nodeEnabled = false }
             .setCancelable(false).create()
@@ -386,7 +446,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun doSavePairingScope(pairing: PairingResult, scope: AccessScope) {
-        pairingCtrl.savePairingScope(pairing, scope,
+        pairingCtrl.savePairingScope(this, pairing, scope,
             onStartService = { startForegroundService(Intent(this, StorageNodeService::class.java)) },
             onSuccess = { isPairing ->
                 Toast.makeText(this, getString(if (isPairing) R.string.toast_paired_success else R.string.toast_access_scope_saved), Toast.LENGTH_LONG).show()

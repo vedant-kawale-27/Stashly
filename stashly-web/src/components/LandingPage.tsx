@@ -91,7 +91,7 @@ export function LandingPage({ theme, onToggleTheme, onOpenAuth }: Props) {
           Access your Android handset storage from any browser worldwide with end-to-end hardware-backed AES-256 encryption. Keep your data under your physical control with zero cloud subscription fees.
         </p>
 
-        <div style={{ display: "flex", justifyContent: "center", gap: 14 }}>
+        <div className="landing-actions">
           <button onClick={() => onOpenAuth("register")} className="btn-primary btn-large">
             Start Free Vault
           </button>
@@ -200,8 +200,8 @@ export function LandingPage({ theme, onToggleTheme, onOpenAuth }: Props) {
       </section>
 
       {/* Footer */}
-      <footer style={{ marginTop: "auto", borderTop: "1px solid var(--border-subtle)", padding: "24px", backgroundColor: "var(--bg-card)" }}>
-        <div style={{ maxWidth: 1200, margin: "0 auto", display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "0.85rem", color: "var(--text-muted)" }}>
+      <footer className="landing-footer">
+        <div className="landing-footer-inner">
           <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 700 }}>
             <span>Stashly Cloud Vault</span>
           </div>

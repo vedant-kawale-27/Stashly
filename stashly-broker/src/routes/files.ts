@@ -40,7 +40,13 @@ filesRouter.get("/", requireAuth, async (req: AuthedRequest, res) => {
 
   const userDevices = await prisma.userDevice.findMany({
     where: { userId: req.user!.userId, ...(deviceId ? { deviceId } : {}) },
-    select: { deviceId: true, scopeMode: true, scopePath: true, sharingEnabled: true },
+    select: {
+      deviceId: true,
+      scopeMode: true,
+      scopePath: true,
+      sharingEnabled: true,
+      device: { select: { sharingPaused: true } },
+    },
   });
   const deviceIds = userDevices.map((ud) => ud.deviceId);
 
@@ -64,6 +70,8 @@ filesRouter.get("/", requireAuth, async (req: AuthedRequest, res) => {
     }).map((f) => ({
       ...f,
       deviceOnline: deviceHub.isOnline(f.deviceId),
+      deviceSharingPaused: linksByDevice.get(f.deviceId)?.device.sharingPaused ?? false,
+      sharingEnabled: linksByDevice.get(f.deviceId)?.sharingEnabled ?? false,
       // Thumbnails are generated on-demand by Android for image/video files
       hasThumbnail: (f.mimeType?.startsWith("image/") || f.mimeType?.startsWith("video/")) && deviceHub.isOnline(f.deviceId),
       encryptionFormat: (f as any).encryptionFormat ?? "single",
@@ -96,7 +104,7 @@ filesRouter.get("/:id/thumbnail", requireAuth, async (req: AuthedRequest, res) =
 
 // Start a chunked upload. Chunks are opaque ciphertext and are never decrypted by the broker.
 filesRouter.post("/uploads", requireAuth, async (req: AuthedRequest, res) => {
-  const { deviceId, path: directory, name, mimeType, encryptedDek, totalBytes } = req.body ?? {};
+  const { deviceId, path: directory, name, mimeType, encryptedDek, totalBytes, totalChunks, encryptionFormat } = req.body ?? {};
   if (
     typeof deviceId !== "string" ||
     typeof directory !== "string" ||
@@ -124,6 +132,8 @@ filesRouter.post("/uploads", requireAuth, async (req: AuthedRequest, res) => {
       mimeType: mimeType ?? null,
       encryptedDek,
       totalBytes,
+      totalChunks: Number.isInteger(totalChunks) && totalChunks > 0 ? totalChunks : 1,
+      encryptionFormat: encryptionFormat === "chunked" ? "chunked" : "single",
       expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
     },
   });
@@ -140,35 +150,82 @@ filesRouter.post("/uploads/:uploadId/chunks", requireAuth, async (req: AuthedReq
     return res.status(404).json({ error: "Upload session not found or expired" });
   }
 
-  const { dataBase64, offset } = req.body ?? {};
-  if (typeof dataBase64 !== "string" || !Number.isInteger(offset) || offset !== session.receivedBytes) {
-    return res.status(400).json({ error: "dataBase64 and the next sequential offset are required", receivedBytes: session.receivedBytes });
+  const { dataBase64, offset, chunkIndex } = req.body ?? {};
+  const indexed = session.encryptionFormat === "chunked";
+  if (typeof dataBase64 !== "string" || (!indexed && (!Number.isInteger(offset) || offset !== session.receivedBytes)) ||
+      (indexed && (!Number.isInteger(chunkIndex) || chunkIndex < 0 || chunkIndex >= session.totalChunks))) {
+    return res.status(400).json({ error: indexed ? "dataBase64 and a valid chunkIndex are required" : "dataBase64 and the next sequential offset are required", receivedBytes: session.receivedBytes });
   }
 
   const chunk = Buffer.from(dataBase64, "base64");
-  if (!chunk.length || session.receivedBytes + chunk.length > session.totalBytes) {
-    return res.status(400).json({ error: "Invalid chunk size" });
+  if (!chunk.length) {
+    return res.status(400).json({ error: "Empty chunk payload" });
   }
 
-  const chunkPath = path.join(config.storageDir, "uploads", `${session.id}.bin`);
-  await fs.promises.appendFile(chunkPath, chunk);
+  if (indexed) {
+    // Individual chunk for AES-GCM 1MB chunked format should not exceed 2MB
+    if (chunk.length > 2 * 1024 * 1024) {
+      return res.status(400).json({ error: "Invalid chunk size" });
+    }
+  } else {
+    // Single format sequential upload
+    if (session.receivedBytes + chunk.length > session.totalBytes) {
+      return res.status(400).json({ error: "Invalid chunk size" });
+    }
+  }
 
-  const updated = await prisma.uploadSession.update({
+  const uploadDir = path.join(config.storageDir, "uploads", session.id);
+  await fs.promises.mkdir(uploadDir, { recursive: true });
+  const chunkPath = indexed ? path.join(uploadDir, `${chunkIndex}.bin`) : path.join(config.storageDir, "uploads", `${session.id}.bin`);
+  const alreadyThere = await fs.promises.stat(chunkPath).then(() => true).catch(() => false);
+  if (!alreadyThere) {
+    if (indexed) await fs.promises.writeFile(chunkPath, chunk);
+    else await fs.promises.appendFile(chunkPath, chunk);
+  }
+
+  const updated = alreadyThere ? session : await prisma.uploadSession.update({
     where: { id: session.id },
     data: { receivedBytes: { increment: chunk.length }, chunkCount: { increment: 1 } },
   });
 
-  if (updated.receivedBytes < updated.totalBytes) {
-    return res.json({ uploadId: session.id, receivedBytes: updated.receivedBytes, complete: false });
+  const receivedChunks = indexed
+    ? (await fs.promises.readdir(uploadDir)).filter((entry) => entry.endsWith(".bin")).length
+    : updated.chunkCount;
+  if (receivedChunks < session.totalChunks || (!indexed && updated.receivedBytes < updated.totalBytes)) {
+    return res.json({ uploadId: session.id, receivedBytes: updated.receivedBytes, receivedChunks, complete: false });
   }
 
+  let claimedCompletion = false;
   try {
-    const payload = await fs.promises.readFile(chunkPath);
-    await deviceHub.uploadFile(session.deviceId, session.path, payload.toString("base64"), session.encryptedDek);
-    await fs.promises.unlink(chunkPath).catch(() => {});
+    if (indexed) {
+      const claimPath = `${uploadDir}.claim`;
+      const claimHandle = await fs.promises.open(claimPath, "wx").catch((err: any) => {
+        if (err?.code === "EEXIST") return null;
+        throw err;
+      });
+      if (!claimHandle) return res.status(409).json({ error: "Upload is already being finalized", code: "UPLOAD_FINALIZING" });
+      await claimHandle.close();
+      claimedCompletion = true;
+    }
+    if (indexed) {
+      const chunks = [];
+      for (let i = 0; i < session.totalChunks; i++) chunks.push(await fs.promises.readFile(path.join(uploadDir, `${i}.bin`)));
+      await deviceHub.uploadChunkedFile(session.deviceId, session.path, chunks, session.encryptedDek, session.totalBytes, session.totalChunks);
+      await prisma.uploadSession.update({
+        where: { id: session.id },
+        data: { completedAt: new Date() },
+      });
+      await fs.promises.rm(uploadDir, { recursive: true, force: true });
+      await fs.promises.rm(`${uploadDir}.claim`, { force: true });
+    } else {
+      const payload = await fs.promises.readFile(chunkPath);
+      await deviceHub.uploadFile(session.deviceId, session.path, payload.toString("base64"), session.encryptedDek);
+      await fs.promises.unlink(chunkPath).catch(() => {});
+    }
     await prisma.uploadSession.delete({ where: { id: session.id } });
-    return res.json({ uploadId: session.id, receivedBytes: updated.receivedBytes, complete: true, path: session.path });
+    return res.json({ uploadId: session.id, receivedBytes: updated.receivedBytes, receivedChunks, complete: true, path: session.path });
   } catch (err: any) {
+    if (claimedCompletion) await fs.promises.rm(`${uploadDir}.claim`, { force: true }).catch(() => {});
     return res.status(err?.message === "DEVICE_OFFLINE" ? 503 : 504).json({ error: err?.message ?? "Device upload failed" });
   }
 });
@@ -284,6 +341,12 @@ filesRouter.get("/:id/download", requireAuth, async (req: AuthedRequest, res) =>
 
   const link = await assertCanAccessDevice(req.user!.userId, file.deviceId);
   if (!link || !isPathAllowed(file.path, link)) return res.status(404).json({ error: "File not accessible for this client" });
+  if (link.device.sharingPaused) {
+    return res.status(403).json({
+      error: "Sharing is paused by the device owner",
+      code: "SHARING_PAUSED",
+    });
+  }
 
   const useChunked = req.query.stream === "chunked";
 

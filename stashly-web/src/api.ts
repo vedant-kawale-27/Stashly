@@ -7,7 +7,7 @@
  */
 
 // Stashly API Client
-import { bytesToBase64 } from "./crypto";
+import { bytesToBase64, encryptChunk } from "./crypto";
 
 export interface SharedUser {
   userId: string;
@@ -35,7 +35,11 @@ export interface Device {
   batteryLevel?: number | null;
   storageTotalMb?: number | null;
   storageFreeMb?: number | null;
+  sdcardMounted?: boolean | null;
+  sdcardTotalMb?: number | null;
+  sdcardFreeMb?: number | null;
   status: "online" | "offline";
+  sharingPaused?: boolean;
   storageQuotaMb: number;
   createdAt: string;
   lastSeenAt?: string | null;
@@ -55,6 +59,8 @@ export interface FileMeta {
   mimeType: string | null;
   encryptedDek: string;
   deviceOnline: boolean;
+  deviceSharingPaused?: boolean;
+  sharingEnabled?: boolean;
   isCached?: boolean;
   cachedAt?: string | null;
   lastAccessAt?: string | null;
@@ -67,6 +73,18 @@ export interface DownloadedFile {
   ciphertext: ArrayBuffer;
   wrappedDek: string;
   fromCache?: boolean;
+}
+
+export interface TransferProgress {
+  loaded: number;
+  total: number | null;
+}
+
+export interface TransferDownloadReady {
+  wrappedDek: string;
+  totalBytes: number;
+  chunkSize: number;
+  totalChunks: number;
 }
 
 export class ApiError extends Error {
@@ -190,7 +208,7 @@ function cachedRequest<T>(
 
 async function parseJsonOrThrow<T = Record<string, unknown>>(res: Response): Promise<T> {
   const text = await res.text();
-  let json: { error?: string } & T = {} as { error?: string } & T;
+  let json: { error?: string; code?: string } & T = {} as { error?: string; code?: string } & T;
   if (text) {
     try {
       json = JSON.parse(text);
@@ -201,7 +219,7 @@ async function parseJsonOrThrow<T = Record<string, unknown>>(res: Response): Pro
     }
   }
   if (!res.ok) {
-    throw new ApiError(json.error ?? `Request failed (HTTP ${res.status})`, res.status);
+    throw new ApiError(json.error ?? `Request failed (HTTP ${res.status})`, res.status, json.code);
   }
   return json;
 }
@@ -387,10 +405,86 @@ export class BrokerClient {
     invalidateCache(`${this.baseUrl}:devices:${this.token ?? "anonymous"}`);
   }
 
-  async downloadFile(fileId: string, encryptionFormat?: string): Promise<DownloadedFile> {
+  /**
+   * Stream an authenticated download over the browser-to-broker junction.
+   * The existing HTTP download methods remain the compatibility fallback.
+   */
+  async streamTransferDownload(
+    fileId: string,
+    onEncryptedChunk: (chunk: Uint8Array, sequence: number, ready: TransferDownloadReady) => Promise<void> | void,
+    onProgress?: (progress: TransferProgress) => void,
+  ): Promise<TransferDownloadReady> {
+    if (!this.token) throw new ApiError("Authentication is required for WebSocket transfers", 401);
+    const wsUrl = this.baseUrl.replace(/^http/, "ws") + `/ws/transfer?token=${encodeURIComponent(this.token)}`;
+    const ws = new WebSocket(wsUrl);
+    ws.binaryType = "arraybuffer";
+    let ready: TransferDownloadReady | undefined;
+    let loaded = 0;
+    let settled = false;
+    let resolveReady!: (value: TransferDownloadReady) => void;
+    let rejectReady!: (reason?: unknown) => void;
+    const readyPromise = new Promise<TransferDownloadReady>((resolve, reject) => {
+      resolveReady = resolve;
+      rejectReady = reject;
+    });
+    const fail = (error: unknown) => {
+      if (!settled) {
+        settled = true;
+        rejectReady(error instanceof Error ? error : new ApiError("WebSocket transfer failed"));
+      }
+      try { ws.close(); } catch { /* already closed */ }
+    };
+
+    ws.onopen = () => ws.send(JSON.stringify({ type: "download", fileId }));
+    ws.onerror = () => fail(new ApiError("WebSocket transfer failed"));
+    ws.onclose = () => {
+      if (!settled) fail(new ApiError("WebSocket transfer ended before completion"));
+    };
+    ws.onmessage = async (event) => {
+      if (typeof event.data === "string") {
+        let message: any;
+        try { message = JSON.parse(event.data); } catch { fail(new ApiError("Invalid transfer response")); return; }
+        if (message.type === "error") {
+          fail(new ApiError(message.error ?? "Transfer failed", undefined, message.code));
+        } else if (message.type === "download_ready") {
+          ready = {
+            wrappedDek: message.wrappedDek,
+            totalBytes: Number(message.totalBytes),
+            chunkSize: Number(message.chunkSize),
+            totalChunks: Number(message.totalChunks),
+          };
+        }
+        return;
+      }
+      if (!ready || !(event.data instanceof ArrayBuffer)) {
+        fail(new ApiError("Invalid transfer frame"));
+        return;
+      }
+      const frame = new Uint8Array(event.data);
+      if (frame.length < 5) { fail(new ApiError("Invalid transfer frame")); return; }
+      const type = frame[0];
+      const sequence = new DataView(frame.buffer, frame.byteOffset).getUint32(1, false);
+      if (type === 2) {
+        settled = true;
+        resolveReady(ready);
+        ws.close(1000, "complete");
+        return;
+      }
+      if (type !== 1 || frame.length < 9) { fail(new ApiError("Invalid transfer frame")); return; }
+      const payloadLength = new DataView(frame.buffer, frame.byteOffset).getUint32(5, false);
+      if (payloadLength !== frame.length - 9) { fail(new ApiError("Invalid transfer frame length")); return; }
+      const chunk = frame.slice(9);
+      loaded += chunk.byteLength;
+      onProgress?.({ loaded, total: ready.totalBytes });
+      try { await onEncryptedChunk(chunk, sequence, ready); } catch (error) { fail(error); }
+    };
+    return readyPromise;
+  }
+
+  async downloadFile(fileId: string, encryptionFormat?: string, onProgress?: (progress: TransferProgress) => void): Promise<DownloadedFile> {
     // Use chunked streaming for files tagged as "chunked" format
     if (encryptionFormat === "chunked") {
-      return this.downloadFileChunked(fileId);
+      return this.downloadFileChunked(fileId, undefined, onProgress);
     }
 
     // Legacy full-file download for "single" format (or untagged files)
@@ -408,7 +502,33 @@ export class BrokerClient {
       );
     }
     const fromCache = res.headers.get("X-From-Local-Cache") === "true";
-    const ciphertext = await res.arrayBuffer();
+    const reader = res.body?.getReader();
+    let ciphertext: ArrayBuffer;
+    if (reader) {
+      const chunks: Uint8Array[] = [];
+      let loaded = 0;
+      const totalHeader = Number(res.headers.get("Content-Length"));
+      const total = Number.isFinite(totalHeader) && totalHeader > 0 ? totalHeader : null;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) {
+          chunks.push(value);
+          loaded += value.length;
+          onProgress?.({ loaded, total });
+        }
+      }
+      const combined = new Uint8Array(loaded);
+      let offset = 0;
+      for (const chunk of chunks) {
+        combined.set(chunk, offset);
+        offset += chunk.length;
+      }
+      ciphertext = combined.buffer;
+    } else {
+      ciphertext = await res.arrayBuffer();
+      onProgress?.({ loaded: ciphertext.byteLength, total: ciphertext.byteLength });
+    }
     return { ciphertext, wrappedDek, fromCache };
   }
 
@@ -422,6 +542,7 @@ export class BrokerClient {
   async downloadFileChunked(
     fileId: string,
     range?: { start: number; end?: number },
+    onProgress?: (progress: TransferProgress) => void,
   ): Promise<DownloadedFile> {
     const headers = new Headers(this.authHeaders());
     if (range) headers.set("Range", `bytes=${range.start}-${range.end ?? ""}`);
@@ -446,11 +567,16 @@ export class BrokerClient {
     // Read the full response and parse length-prefixed chunks
     const encryptedChunks: Uint8Array[] = [];
     let buffer = new Uint8Array(0);
+    let loaded = 0;
+    const totalHeader = Number(res.headers.get("Content-Length"));
+    const total = Number.isFinite(totalHeader) && totalHeader > 0 ? totalHeader : null;
     let ended = false;
 
     while (true) {
       const { done, value } = await reader.read();
       if (value) {
+        loaded += value.length;
+        onProgress?.({ loaded, total });
         // Append to buffer
         const newBuf = new Uint8Array(buffer.length + value.length);
         newBuf.set(buffer, 0);
@@ -517,6 +643,7 @@ export class BrokerClient {
     fileId: string,
     onEncryptedChunk: (chunk: Uint8Array, index: number, wrappedDek: string) => Promise<void>,
     range?: { start: number; end?: number },
+    onProgress?: (progress: TransferProgress) => void,
   ): Promise<{ wrappedDek: string; chunkCount: number }> {
     const headers = new Headers(this.authHeaders());
     if (range) headers.set("Range", `bytes=${range.start}-${range.end ?? ""}`);
@@ -539,12 +666,17 @@ export class BrokerClient {
     }
 
     let buffer = new Uint8Array(0);
+    let loaded = 0;
+    const totalHeader = Number(res.headers.get("Content-Length"));
+    const total = Number.isFinite(totalHeader) && totalHeader > 0 ? totalHeader : null;
     let chunkIndex = 0;
     let finished = false;
 
     while (!finished) {
       const { done, value } = await reader.read();
       if (value) {
+        loaded += value.length;
+        onProgress?.({ loaded, total });
         const newBuf = new Uint8Array(buffer.length + value.length);
         newBuf.set(buffer, 0);
         newBuf.set(value, buffer.length);
@@ -557,6 +689,7 @@ export class BrokerClient {
         if (chunkLen === 0) {
           if (buffer.length !== 4) throw new ApiError("Unexpected data after chunked end marker");
           finished = true;
+          buffer = buffer.subarray(4);
           break;
         }
         if (buffer.length < 4 + chunkLen) break; // need more data
@@ -593,6 +726,7 @@ export class BrokerClient {
     mimeType: string | null,
     ciphertext: ArrayBuffer,
     encryptedDek: string,
+    onProgress?: (progress: TransferProgress) => void,
   ): Promise<void> {
     const bytes = new Uint8Array(ciphertext);
     const start = await fetch(`${this.baseUrl}/files/uploads`, {
@@ -602,6 +736,7 @@ export class BrokerClient {
     });
     const upload = await parseJsonOrThrow<{ uploadId: string; receivedBytes: number }>(start);
     const chunkSize = 4 * 1024 * 1024;
+    onProgress?.({ loaded: upload.receivedBytes, total: bytes.byteLength });
     for (let offset = upload.receivedBytes; offset < bytes.length; offset += chunkSize) {
       const chunk = bytes.slice(offset, Math.min(offset + chunkSize, bytes.length));
       const res = await fetch(`${this.baseUrl}/files/uploads/${encodeURIComponent(upload.uploadId)}/chunks`, {
@@ -610,7 +745,56 @@ export class BrokerClient {
         body: JSON.stringify({ offset, dataBase64: bytesToBase64(chunk) }),
       });
       if (!res.ok) await parseJsonOrThrow(res);
+      onProgress?.({ loaded: Math.min(offset + chunk.length, bytes.byteLength), total: bytes.byteLength });
     }
+
+    invalidateCache(`${this.baseUrl}:files:${this.token ?? "anonymous"}`);
+  }
+
+  async uploadChunkedFile(
+      deviceId: string, path: string, name: string, mimeType: string | null,
+      plaintext: ArrayBuffer, dek: Uint8Array, encryptedDek: string,
+      onProgress?: (progress: TransferProgress) => void,
+    ): Promise<void> {
+      const chunkSize = 1024 * 1024;
+      const totalChunks = Math.max(1, Math.ceil(plaintext.byteLength / chunkSize));
+      const start = await fetch(`${this.baseUrl}/files/uploads`, {
+        method: "POST", headers: { ...this.authHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ deviceId, path, name, mimeType, encryptedDek, totalBytes: plaintext.byteLength, totalChunks, encryptionFormat: "chunked" }),
+      });
+      const upload = await parseJsonOrThrow<{ uploadId: string; receivedBytes: number; receivedChunks?: number }>(start);
+      let loaded = 0;
+      onProgress?.({ loaded, total: plaintext.byteLength });
+      const pending = Array.from({ length: totalChunks }, (_, index) => index)
+        .filter((index) => index >= (upload.receivedChunks ?? 0));
+      const worker = async () => {
+        while (pending.length) {
+          const index = pending.shift();
+          if (index === undefined) return;
+          const raw = plaintext.slice(index * chunkSize, Math.min((index + 1) * chunkSize, plaintext.byteLength));
+          const encrypted = new Uint8Array(await encryptChunk(dek, raw));
+          let lastError: unknown;
+          for (let attempt = 0; attempt < 4; attempt++) {
+            try {
+              const res = await fetch(`${this.baseUrl}/files/uploads/${encodeURIComponent(upload.uploadId)}/chunks`, {
+                method: "POST", headers: { ...this.authHeaders(), "Content-Type": "application/json" },
+                body: JSON.stringify({ chunkIndex: index, dataBase64: bytesToBase64(encrypted) }),
+              });
+              if (!res.ok) await parseJsonOrThrow(res);
+              loaded += raw.byteLength;
+              onProgress?.({ loaded: Math.min(loaded, plaintext.byteLength), total: plaintext.byteLength });
+              lastError = undefined;
+              break;
+            } catch (error) {
+              lastError = error;
+              await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+            }
+          }
+          if (lastError) throw lastError;
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(4, totalChunks) }, worker));
+      invalidateCache(`${this.baseUrl}:files:${this.token ?? "anonymous"}`);
     invalidateCache(`${this.baseUrl}:files:${this.token ?? "anonymous"}`);
   }
 

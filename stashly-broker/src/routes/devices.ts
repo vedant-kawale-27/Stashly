@@ -14,6 +14,7 @@ import { config } from "../config";
 import { prisma } from "../db";
 import { AuthedRequest, requireAuth } from "../middleware";
 import { deviceHub } from "../ws/deviceHub";
+import { clientHub } from "../ws/clientHub";
 import { isDirectoryEntry, isPathAllowed } from "../access";
 
 async function cleanupDeviceFileCache(deviceId: string) {
@@ -23,8 +24,8 @@ async function cleanupDeviceFileCache(deviceId: string) {
   });
   await Promise.all(files.map((file) =>
     Promise.all([
-      fs.promises.unlink(path.join(config.storageDir, file.cacheKey ?? `${file.id}.bin`)).catch(() => {}),
-      fs.promises.rm(path.join(config.storageDir, "chunks", file.id), { recursive: true, force: true }).catch(() => {}),
+      fs.promises.unlink(path.join(config.storageDir, file.cacheKey ?? `${file.id}.bin`)).catch(() => { }),
+      fs.promises.rm(path.join(config.storageDir, "chunks", file.id), { recursive: true, force: true }).catch(() => { }),
     ])
   ));
 }
@@ -147,6 +148,9 @@ devicesRouter.post("/pair", async (req, res) => {
     batteryLevel,
     storageTotalMb,
     storageFreeMb,
+    sdcardMounted,
+    sdcardTotalMb,
+    sdcardFreeMb,
   } = req.body ?? {};
 
   if (!token || (!deviceName && !existingDeviceId)) {
@@ -217,6 +221,9 @@ devicesRouter.post("/pair", async (req, res) => {
     ...(Number.isInteger(batteryLevel) ? { batteryLevel } : {}),
     ...(Number.isInteger(storageTotalMb) ? { storageTotalMb } : {}),
     ...(Number.isInteger(storageFreeMb) ? { storageFreeMb } : {}),
+    ...(typeof sdcardMounted === "boolean" ? { sdcardMounted } : {}),
+    ...(Number.isInteger(sdcardTotalMb) ? { sdcardTotalMb } : {}),
+    ...(Number.isInteger(sdcardFreeMb) ? { sdcardFreeMb } : {}),
   });
 
   await prisma.pairingToken.update({
@@ -299,6 +306,11 @@ devicesRouter.put("/self/client/:targetUserId/sharing", async (req, res) => {
       select: { scopeMode: true, scopePath: true, scopeName: true, sharingEnabled: true },
     });
     deviceHub.notifyClientPresence(payload.deviceId, req.params.targetUserId, req.body.enabled);
+    clientHub.pushToUser(req.params.targetUserId, {
+      type: "device_sharing_changed",
+      deviceId: payload.deviceId,
+      sharingEnabled: req.body.enabled,
+    });
     return res.json(link);
   } catch (error: any) {
     if (error?.code === "P2025") return res.status(404).json({ error: "Client access link not found" });
@@ -331,7 +343,7 @@ devicesRouter.delete("/self/client/:targetUserId", async (req, res) => {
       deviceHub.notifyDeviceRemoved(payload.deviceId, "All client connections were removed from this node");
       await cleanupDeviceFileCache(payload.deviceId);
       await prisma.fileEntry.deleteMany({ where: { deviceId: payload.deviceId } });
-      await prisma.device.delete({ where: { id: payload.deviceId } }).catch(() => {});
+      await prisma.device.delete({ where: { id: payload.deviceId } }).catch(() => { });
     }
     return res.status(204).send();
   } catch (error: any) {
@@ -440,6 +452,7 @@ devicesRouter.get("/", requireAuth, async (req: AuthedRequest, res) => {
       platform: d.platform,
       ...liveInfo,
       status: isOnline ? "online" : "offline",
+      sharingPaused: d.sharingPaused,
       lastSeenAt: d.lastSeenAt,
       storageQuotaMb: d.storageQuotaMb,
       createdAt: d.createdAt,
@@ -503,7 +516,7 @@ devicesRouter.delete("/:id", requireAuth, async (req: AuthedRequest, res) => {
       deviceHub.notifyClientRemoved(req.params.id, req.user!.userId);
       deviceHub.notifyDeviceRemoved(req.params.id, "Node was removed from the Stashly Web Dashboard");
       await prisma.fileEntry.deleteMany({ where: { deviceId: req.params.id } });
-      await prisma.device.delete({ where: { id: req.params.id } }).catch(() => {});
+      await prisma.device.delete({ where: { id: req.params.id } }).catch(() => { });
     } else {
       deviceHub.notifyClientRemoved(req.params.id, req.user!.userId);
     }

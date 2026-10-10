@@ -185,7 +185,7 @@ export function AuthModal({ isOpen, initialMode = "login", client, onClose, onAu
               <button
                 type="button"
                 onClick={() => setMode("register")}
-                style={{ background: "none", color: "var(--primary)", fontWeight: 700, padding: 0 }}
+                className="auth-link-button"
               >
                 Sign up free
               </button>
@@ -196,7 +196,7 @@ export function AuthModal({ isOpen, initialMode = "login", client, onClose, onAu
               <button
                 type="button"
                 onClick={() => setMode("login")}
-                style={{ background: "none", color: "var(--primary)", fontWeight: 700, padding: 0 }}
+                className="auth-link-button"
               >
                 Sign in
               </button>

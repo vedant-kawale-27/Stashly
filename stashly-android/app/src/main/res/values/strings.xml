@@ -27,8 +27,13 @@
     <string name="node_status_not_paired">⚠️ Node Not Paired</string>
     <string name="node_info_not_paired">Open \'New Connection\' to pair with broker.</string>
     <string name="node_status_active">🟢 Active &amp; Serving Files</string>
+    <string name="node_status_connecting">🟡 Connecting to Broker…</string>
+    <string name="node_status_broker_unavailable">🔴 Broker Unavailable / Not Connected</string>
     <string name="node_status_stopped">⚪ Node Paired (Stopped)</string>
     <string name="node_broker_format">Broker: %1$s</string>
+    <string name="node_broker_connected_format">Connected to %1$s</string>
+    <string name="node_broker_connecting_format">Connecting to %1$s…</string>
+    <string name="node_broker_unavailable_format">Cannot reach broker at %1$s (retrying)</string>
 
     <string name="btn_start_node">Start Node</string>
     <string name="btn_stop_node">Stop Node</string>
@@ -72,7 +77,13 @@
     <string name="toast_sync_error">Sync error: %1$s</string>
     <string name="toast_pairing_error_network">Cannot reach broker at %1$s. Ensure phone and broker are on the same Wi-Fi network or scan QR code.</string>
     <string name="toast_pairing_error_general">Pairing failed: %1$s</string>
-    <string name="storage_overview_title">PHONE STORAGE OVERVIEW</string>
+    <string name="storage_overview_title">STORAGE OVERVIEW</string>
+    <string name="internal_storage_title">INTERNAL STORAGE</string>
+    <string name="sdcard_storage_title">SD CARD STORAGE</string>
+    <string name="sdcard_not_mounted">SD Card Not Mounted</string>
+    <string name="sdcard_permission_title">SD Card Storage Access</string>
+    <string name="sdcard_permission_desc">Allows Stashly to index and share removable SD card files.</string>
+    <string name="sdcard_not_inserted_desc">SD card is not inserted or not mounted.</string>
     <string name="storage_used_label">Used Space</string>
     <string name="storage_free_label">Free Available</string>
     <string name="storage_total_label">Total Storage</string>

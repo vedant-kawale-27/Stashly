@@ -21,18 +21,18 @@ export function WindowsMountModal({ device, onClose }: Props) {
           X
         </button>
 
-        <div style={{ marginBottom: 16 }}>
-          <h3 style={{ fontSize: "1.1rem", fontWeight: 700 }}>Native Windows drive mapping</h3>
-          <p style={{ fontSize: "0.82rem", color: "var(--text-secondary)", marginTop: 2 }}>
+        <div className="dialog-section">
+          <h3>Native Windows drive mapping</h3>
+          <p>
             {device.name} cannot yet be mapped as a native Windows drive. Stashly does not currently ship a native Windows drive agent.
           </p>
         </div>
 
-        <div style={{ marginBottom: 16, padding: "12px", background: "var(--bg-subtle)", borderRadius: "var(--radius-xs)" }}>
+        <div className="dialog-note">
           Use the browser-based file browser from the Files tab to view, preview, download, and upload encrypted files from Windows.
         </div>
 
-        <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center" }}>
+        <div className="dialog-footer">
           <button className="btn-primary" onClick={onClose}>
             Close
           </button>

@@ -67,7 +67,10 @@ object PairingRepository {
         appVersion: String? = null,
         batteryLevel: Int? = null,
         storageTotalMb: Int? = null,
-        storageFreeMb: Int? = null
+        storageFreeMb: Int? = null,
+        sdcardMounted: Boolean? = null,
+        sdcardTotalMb: Int? = null,
+        sdcardFreeMb: Int? = null
     ): PairingResult {
         val body = JSONObject().apply {
             put("token", pairingToken)
@@ -83,6 +86,9 @@ object PairingRepository {
             if (batteryLevel != null) put("batteryLevel", batteryLevel)
             if (storageTotalMb != null) put("storageTotalMb", storageTotalMb)
             if (storageFreeMb != null) put("storageFreeMb", storageFreeMb)
+            if (sdcardMounted != null) put("sdcardMounted", sdcardMounted)
+            if (sdcardTotalMb != null) put("sdcardTotalMb", sdcardTotalMb)
+            if (sdcardFreeMb != null) put("sdcardFreeMb", sdcardFreeMb)
         }.toString().toRequestBody(jsonMediaType)
 
         val request = Request.Builder()

@@ -7,6 +7,13 @@
  */
 
 import { PrismaClient } from "@prisma/client";
+import { config } from "./config";
 
 // Single shared Prisma instance across the app.
-export const prisma = new PrismaClient();
+export const prisma = new PrismaClient({
+  datasources: {
+    db: {
+      url: config.databaseUrl,
+    },
+  },
+});

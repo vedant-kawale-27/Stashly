@@ -90,26 +90,20 @@ class StashlyWidgetProvider : AppWidgetProvider() {
                 val user = users.optJSONObject(index)
                 user?.optBoolean("sharingEnabled", true) == true && user.optBoolean("isLive", false) && running
             }
+            val isLive = storage?.isLive == true
             views.setTextViewText(R.id.widgetClientSummary, "$onlineUsers/$totalUsers online connected clients")
             views.setTextViewText(
                 R.id.widgetNodeStatus,
                 when {
-                    !paired -> "Stashly · Offline"
-                    running -> "Stashly · Active"
-                    else -> "Stashly · Stopped"
-                }
-            )
-            views.setTextViewText(
-                R.id.widgetNodeStatus,
-                when {
-                    !paired -> "Stashly - Not connected"
-                    running -> "Stashly - Running"
-                    else -> "Stashly - Stopped"
+                    !paired -> "Stashly · Not paired"
+                    !running -> "Stashly · Stopped"
+                    isLive -> "Stashly · Active"
+                    else -> "Stashly · Broker unavailable"
                 }
             )
             views.setTextViewText(R.id.widgetToggleButton, if (running) "Stop" else "Start")
             views.setBoolean(R.id.widgetToggleButton, "setEnabled", paired)
-            views.setBoolean(R.id.widgetSyncButton, "setEnabled", running)
+            views.setBoolean(R.id.widgetSyncButton, "setEnabled", running && isLive)
 
             views.setOnClickPendingIntent(R.id.widgetToggleButton, actionPendingIntent(context, ACTION_TOGGLE_NODE))
             views.setOnClickPendingIntent(R.id.widgetSyncButton, actionPendingIntent(context, ACTION_SYNC_NOW))

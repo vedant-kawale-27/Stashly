@@ -83,6 +83,16 @@
                         </LinearLayout>
 
                         <TextView
+                            android:id="@+id/internalStorageLabel"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="12dp"
+                            android:text="@string/internal_storage_title"
+                            android:textColor="@color/text_secondary_light"
+                            android:textSize="12sp"
+                            android:textStyle="bold" />
+
+                        <TextView
                             android:id="@+id/storageMainText"
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
@@ -178,8 +188,130 @@
                             </LinearLayout>
                         </LinearLayout>
 
+                        <!-- SD Card Storage Section -->
+                        <View
+                            android:id="@+id/sdcardDivider"
+                            android:layout_width="match_parent"
+                            android:layout_height="1dp"
+                            android:layout_marginTop="16dp"
+                            android:background="@color/border_light" />
+
+                        <LinearLayout
+                            android:id="@+id/sdcardStorageSection"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="14dp"
+                            android:orientation="vertical">
+
+                            <TextView
+                                android:id="@+id/sdcardStorageLabel"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="@string/sdcard_storage_title"
+                                android:textColor="@color/amber"
+                                android:textSize="12sp"
+                                android:textStyle="bold" />
+
+                            <TextView
+                                android:id="@+id/sdcardMainText"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="4dp"
+                                android:text="@string/sdcard_not_mounted"
+                                android:textColor="@color/text_primary_light"
+                                android:textSize="18sp"
+                                android:textStyle="bold" />
+
+                            <ProgressBar
+                                android:id="@+id/sdcardProgressBar"
+                                style="@style/Widget.AppCompat.ProgressBar.Horizontal"
+                                android:layout_width="match_parent"
+                                android:layout_height="12dp"
+                                android:layout_marginTop="10dp"
+                                android:max="100"
+                                android:progress="0"
+                                android:progressDrawable="@drawable/progress_storage_sdcard" />
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="12dp"
+                                android:orientation="horizontal">
+
+                                <LinearLayout
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_weight="1"
+                                    android:orientation="vertical">
+
+                                    <TextView
+                                        android:layout_width="wrap_content"
+                                        android:layout_height="wrap_content"
+                                        android:text="@string/storage_used_label"
+                                        android:textColor="@color/text_secondary_light"
+                                        android:textSize="12sp" />
+
+                                    <TextView
+                                        android:id="@+id/sdcardUsedText"
+                                        android:layout_width="wrap_content"
+                                        android:layout_height="wrap_content"
+                                        android:text="--"
+                                        android:textColor="@color/text_primary_light"
+                                        android:textSize="15sp"
+                                        android:textStyle="bold" />
+                                </LinearLayout>
+
+                                <LinearLayout
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_weight="1"
+                                    android:orientation="vertical">
+
+                                    <TextView
+                                        android:layout_width="wrap_content"
+                                        android:layout_height="wrap_content"
+                                        android:text="@string/storage_free_label"
+                                        android:textColor="@color/text_secondary_light"
+                                        android:textSize="12sp" />
+
+                                    <TextView
+                                        android:id="@+id/sdcardFreeText"
+                                        android:layout_width="wrap_content"
+                                        android:layout_height="wrap_content"
+                                        android:text="--"
+                                        android:textColor="@color/emerald"
+                                        android:textSize="15sp"
+                                        android:textStyle="bold" />
+                                </LinearLayout>
+
+                                <LinearLayout
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_weight="1"
+                                    android:orientation="vertical">
+
+                                    <TextView
+                                        android:layout_width="wrap_content"
+                                        android:layout_height="wrap_content"
+                                        android:text="@string/storage_total_label"
+                                        android:textColor="@color/text_secondary_light"
+                                        android:textSize="12sp" />
+
+                                    <TextView
+                                        android:id="@+id/sdcardTotalText"
+                                        android:layout_width="wrap_content"
+                                        android:layout_height="wrap_content"
+                                        android:text="--"
+                                        android:textColor="@color/text_primary_light"
+                                        android:textSize="15sp"
+                                        android:textStyle="bold" />
+                                </LinearLayout>
+                            </LinearLayout>
+                        </LinearLayout>
+
                     </LinearLayout>
                 </com.google.android.material.card.MaterialCardView>
+
 
                 <!-- Node Status & Quick Action Card -->
                 <com.google.android.material.card.MaterialCardView

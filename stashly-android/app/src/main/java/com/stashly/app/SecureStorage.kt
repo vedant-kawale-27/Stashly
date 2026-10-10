@@ -79,6 +79,10 @@ class SecureStorage(context: Context) {
         get() = prefs.getBoolean(KEY_IS_LIVE, false)
         set(value) = prefs.edit().putBoolean(KEY_IS_LIVE, value).apply()
 
+    var brokerConnectionState: String
+        get() = prefs.getString(KEY_BROKER_CONNECTION_STATE, "OFFLINE") ?: "OFFLINE"
+        set(value) = prefs.edit().putString(KEY_BROKER_CONNECTION_STATE, value).apply()
+
     var lastLiveTimestamp: Long
         get() = prefs.getLong(KEY_LAST_LIVE, 0L)
         set(value) = prefs.edit().putLong(KEY_LAST_LIVE, value).apply()
@@ -99,6 +103,7 @@ class SecureStorage(context: Context) {
         get() = prefs.getString(KEY_CUSTOM_FOLDER_NAME, null)
         set(value) = prefs.edit().putString(KEY_CUSTOM_FOLDER_NAME, value).apply()
 
+
     var connectedUsersJson: String?
         get() = prefs.getString(KEY_CONNECTED_USERS, null)
         set(value) = prefs.edit().putString(KEY_CONNECTED_USERS, value).apply()
@@ -110,6 +115,10 @@ class SecureStorage(context: Context) {
     var pendingFinalRemovalReason: String?
         get() = prefs.getString(KEY_PENDING_FINAL_REMOVAL, null)
         set(value) = prefs.edit().putString(KEY_PENDING_FINAL_REMOVAL, value).apply()
+
+    var sdcardAccessEnabled: Boolean
+        get() = prefs.getBoolean(KEY_SDCARD_ACCESS_ENABLED, true)
+        set(value) = prefs.edit().putBoolean(KEY_SDCARD_ACCESS_ENABLED, value).apply()
 
     fun clear() = prefs.edit().clear().apply()
 
@@ -124,6 +133,7 @@ class SecureStorage(context: Context) {
         private const val KEY_MASTER_KEY = "master_key"
         private const val KEY_NODE_ENABLED = "node_enabled"
         private const val KEY_IS_LIVE = "is_live"
+        private const val KEY_BROKER_CONNECTION_STATE = "broker_connection_state"
         private const val KEY_LAST_LIVE = "last_live"
         private const val KEY_STORAGE_SCOPE_MODE = "storage_scope_mode"
         private const val KEY_CUSTOM_FOLDER_PATH = "custom_folder_path"
@@ -132,5 +142,6 @@ class SecureStorage(context: Context) {
         private const val KEY_CONNECTED_USERS = "connected_users"
         private const val KEY_PENDING_CLIENT_REMOVED = "pending_client_removed"
         private const val KEY_PENDING_FINAL_REMOVAL = "pending_final_removal"
+        private const val KEY_SDCARD_ACCESS_ENABLED = "sdcard_access_enabled"
     }
 }

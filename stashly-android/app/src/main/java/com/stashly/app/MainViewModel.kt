@@ -29,6 +29,17 @@ data class StorageMeterData(
     val usedPercent: Int
 )
 
+/** Data class for SD card storage meter display values. */
+data class SdCardMeterData(
+    val isSupported: Boolean = true,
+    val isMounted: Boolean = false,
+    val usedGb: Double = 0.0,
+    val freeGb: Double = 0.0,
+    val totalGb: Double = 0.0,
+    val usedPercent: Int = 0,
+    val path: String? = null
+)
+
 /** Data class for parsed folder selection from a document tree URI. */
 data class FolderSelection(
     val virtualPath: String,
@@ -49,6 +60,8 @@ class MainViewModel : ViewModel() {
     /** Current node state (refreshed by NodeController). */
     var nodePaired: Boolean = false
     var nodeRunning: Boolean = false
+    var isLive: Boolean = false
+    var brokerConnectionState: String = "OFFLINE"
 
     /** Broker connection info. */
     var brokerUrl: String? = null
@@ -58,6 +71,9 @@ class MainViewModel : ViewModel() {
 
     /** Storage meter data for the storage page. */
     var storageMeterData: StorageMeterData? = null
+
+    /** SD card meter data for the storage page. */
+    var sdCardMeterData: SdCardMeterData? = null
 
     // ── Pure formatting helpers (no Context dependency) ──
 

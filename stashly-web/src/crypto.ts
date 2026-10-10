@@ -54,6 +54,15 @@ async function aesGcmEncrypt(rawKey: Uint8Array, plaintext: ArrayBuffer): Promis
   return result.buffer;
 }
 
+/** Encrypt one independently authenticated chunk with an existing file DEK. */
+export async function encryptChunk(dek: Uint8Array, plaintext: ArrayBuffer): Promise<ArrayBuffer> {
+  return aesGcmEncrypt(dek, plaintext);
+}
+
+export function createDek(): Uint8Array {
+  return crypto.getRandomValues(new Uint8Array(32));
+}
+
 /** Unwrap a per-file DEK using the account master key. */
 export async function unwrapDek(masterKeyBase64: string, wrappedDekBase64: string): Promise<Uint8Array> {
   const masterKey = base64ToBytes(masterKeyBase64);

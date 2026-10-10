@@ -11,6 +11,7 @@ package com.stashly.app
 import android.content.Context
 import android.os.Environment
 import android.os.StatFs
+import androidx.core.content.ContextCompat
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
@@ -18,6 +19,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -58,10 +60,13 @@ class NodeController(
         if (!storage.isPaired) { onNotPaired(); return }
         if (storage.nodeEnabled) {
             storage.nodeEnabled = false
+            storage.isLive = false
+            storage.brokerConnectionState = "OFFLINE"
             onStopService()
             onStatusChange(false)
         } else {
             storage.nodeEnabled = true
+            storage.brokerConnectionState = "CONNECTING"
             onStartService()
             onStatusChange(true)
         }
@@ -83,6 +88,8 @@ class NodeController(
         val isRunning = isPaired && storage.nodeEnabled
         viewModel.nodePaired = isPaired
         viewModel.nodeRunning = isRunning
+        viewModel.isLive = if (isRunning) storage.isLive else false
+        viewModel.brokerConnectionState = if (isRunning) storage.brokerConnectionState else "OFFLINE"
         viewModel.brokerUrl = storage.brokerBaseUrl
         if (isPaired) {
             viewModel.lastSyncTime = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
@@ -109,6 +116,51 @@ class NodeController(
             )
         } catch (_: Exception) {
             viewModel.storageMeterData = null
+        }
+    }
+
+    /** Compute SD card meter data and store in ViewModel. */
+    fun refreshSdCardMeter(context: Context) {
+        if (!StorageUtils.hasSdCardSupport(context)) {
+            viewModel.sdCardMeterData = SdCardMeterData(isSupported = false, isMounted = false)
+            return
+        }
+
+        if (!storage.sdcardAccessEnabled) {
+            viewModel.sdCardMeterData = SdCardMeterData(isSupported = true, isMounted = false)
+            return
+        }
+
+        try {
+            val removableFile = StorageUtils.getMountedSdCardFile(context)
+            if (removableFile != null) {
+                val stat = StatFs(removableFile.path)
+                val blockSize = stat.blockSizeLong
+                val totalBlocks = stat.blockCountLong
+                val availableBlocks = stat.availableBlocksLong
+                val totalBytes = totalBlocks * blockSize
+                val freeBytes = availableBlocks * blockSize
+                val usedBytes = (totalBytes - freeBytes).coerceAtLeast(0L)
+                val totalGb = totalBytes.toDouble() / (1024 * 1024 * 1024)
+                val freeGb = freeBytes.toDouble() / (1024 * 1024 * 1024)
+                val usedGb = usedBytes.toDouble() / (1024 * 1024 * 1024)
+                val usedPercent = if (totalBytes > 0) ((usedBytes.toDouble() / totalBytes) * 100).toInt() else 0
+
+                viewModel.sdCardMeterData = SdCardMeterData(
+                    isSupported = true,
+                    isMounted = true,
+                    usedGb = usedGb,
+                    freeGb = freeGb,
+                    totalGb = totalGb,
+                    usedPercent = usedPercent,
+                    path = removableFile.absolutePath
+                )
+                return
+            }
+
+            viewModel.sdCardMeterData = SdCardMeterData(isSupported = true, isMounted = false)
+        } catch (_: Exception) {
+            viewModel.sdCardMeterData = SdCardMeterData(isSupported = true, isMounted = false)
         }
     }
 
